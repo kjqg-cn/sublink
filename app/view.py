@@ -15,16 +15,20 @@ def get_country_emoji(hostname):
         pattern = re.compile(r'^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$')
         return bool(pattern.match(url))
 
-    ip = hostname
-    if is_valid_url(ip):
-        ip = socket.gethostbyname(hostname)
-    response = requests.get(f"http://ipwho.is/{ip}")
-    if response.status_code == 200:
-        js = response.json()
-        flag = js.get('flag')
-        emoji = flag.get("emoji")
-        # print(js)
-        return emoji
+    try:
+        ip = hostname
+        if is_valid_url(ip):
+            ip = socket.gethostbyname(hostname)
+        response = requests.get(f"http://ipwho.is/{ip}", timeout=request_timeout)
+        if response.status_code == 200:
+            js = response.json()
+            flag = js.get('flag') or {}
+            emoji = flag.get("emoji")
+            # print(js)
+            if emoji:
+                return emoji
+    except Exception as e:
+        print(f'获取入口国旗失败:{hostname} 错误信息:{str(e)}')
     return hostname
 def save_ip_address(): # 获取ip地址
     ip_address = request.environ.get('HTTP_X_REAL_IP', request.remote_addr)
@@ -159,6 +163,7 @@ class NodeParse():
         # parse = urllib.parse.urlparse(decode_base64_if(proxy_test))
         # print(f'测试{parse}')
         # print(f'类型{parse.query}')
+        cert = None
         if parse.query != '':
             # print('非标准格式')
             query = urllib.parse.parse_qs(parse.query)
@@ -177,15 +182,11 @@ class NodeParse():
             host = query.get('obfsParam')
             if Emoji:
                 name = get_country_emoji(server) + name
-            if query.get('cert'):
-                if query.get('cert').lower() == 'true':
-                    proxy['skip-cert-verify'] = True
-                else:
-                    proxy['skip-cert-verify'] = False
+            cert = query.get('cert')
             # print(server, port, network, uuid, tls)
         else:
             info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
-            proxy = eval(decode_base64_if(info))
+            proxy = json.loads(decode_base64_if(info))
             name = proxy.get('ps')
             uuid = proxy.get('id')
             server = proxy.get('add')
@@ -196,6 +197,7 @@ class NodeParse():
             tls = proxy.get('tls')
             pathA = proxy.get('path')
             host = proxy.get('host')
+            cert = proxy.get('cert')
             if Emoji:
                 name = get_country_emoji(server) + name
 
@@ -214,6 +216,8 @@ class NodeParse():
             'network': network,  # 代理的网络类型
             'tls': True if tls != 'none' and tls != '' else False
         }
+        if cert:
+            proxys['skip-cert-verify'] = str(cert).lower() == 'true'
 
         if network == 'ws':
             proxys['ws-opts'] = {
@@ -434,8 +438,8 @@ def clash_encode(subs): #clash编码
     proxy_name_list = []
     # 解析并添加节点到 Clash 配置
     for sub in subs:
-        proxy_type = sub.node.split('://')[0]  # 节点类型
-        proxy_test = sub.node  # 节点信息
+        proxy_type = get_proxy_type(sub.node)  # 节点类型
+        proxy_test = sub.node.strip()  # 节点信息
         # print(proxy_type,proxy_test)
         def clash():
             if proxy_type == 'vless':
@@ -480,18 +484,20 @@ def clash_encode(subs): #clash编码
                 proxy = node_parse.hysteria2()
                 clash_config['proxies'].append(proxy)
                 proxy_name_list.append(proxy['name'])
-
-        if proxy_type == 'http' or proxy_type == 'https':
-            url = proxy_test
-            response = requests.get(url)
-            text = decode_base64_if(response.text)
-            subs2 = text.split("\n")
-            for sub2 in subs2:
-                proxy_type = sub2.split("://")[0]
-                proxy_test = sub2
+        def safe_clash():
+            try:
                 clash()
+            except Exception as e:
+                print(f'clash节点解析失败:{proxy_test} 错误信息:{str(e)}')
+
+        if proxy_type in remote_sub_types:
+            url = proxy_test
+            for sub2 in fetch_remote_sub(url):
+                proxy_type = get_proxy_type(sub2)
+                proxy_test = sub2
+                safe_clash()
         else:
-            clash()
+            safe_clash()
     # 将 Clash 配置转为 YAML 格式
     with open(path + '/db/clash.yaml', 'r') as file:
         data = yaml.safe_load(file)
@@ -516,8 +522,8 @@ def surge_encode(subs):
     proxy_name_list = []
     # 解析并添加节点到 Clash 配置
     for sub in subs:
-        proxy_type = sub.node.split('://')[0]  # 节点类型
-        proxy_test = sub.node  # 节点信息
+        proxy_type = get_proxy_type(sub.node)  # 节点类型
+        proxy_test = sub.node.strip()  # 节点信息
         def surge():
             if proxy_type == 'ss':
                 node_parse = NodeParse()  # 创建 NodeParse 实例
@@ -563,17 +569,19 @@ def surge_encode(subs):
                     proxys += f",sni={proxy['sni']}"
                 surge_config['proxy'].append(proxys)
                 proxy_name_list.append(proxy['name'])
-        if proxy_type == 'http' or proxy_type == 'https':
-            url = proxy_test
-            response = requests.get(url)
-            text = decode_base64_if(response.text)
-            subs2 = text.split("\n")
-            for sub2 in subs2:
-                proxy_type = sub2.split("://")[0]
-                proxy_test = sub2
+        def safe_surge():
+            try:
                 surge()
+            except Exception as e:
+                print(f'surge节点解析失败:{proxy_test} 错误信息:{str(e)}')
+        if proxy_type in remote_sub_types:
+            url = proxy_test
+            for sub2 in fetch_remote_sub(url):
+                proxy_type = get_proxy_type(sub2)
+                proxy_test = sub2
+                safe_surge()
         else:
-            surge()
+            safe_surge()
     config_file = path + '/db/surge.conf'
     def add_key_value_to_proxy(new_key_value):
         with open(config_file, 'r') as file:
@@ -619,14 +627,14 @@ def get_sub_url(target,name):
         if target == 'v2ray':
             data = []
             for sub in subs:
-                proxy_type = sub.node.split('://')[0]  # 节点类型
-                proxy_test = sub.node  # 节点信息
-                if proxy_type == 'http' or proxy_type == 'https':
+                proxy_type = get_proxy_type(sub.node)  # 节点类型
+                proxy_test = sub.node.strip()  # 节点信息
+                if proxy_type in remote_sub_types:
                     url = proxy_test
-                    response = requests.get(url)
-                    text = decode_base64_if(response.text)
-                    proxy_test = text
-                data.append(proxy_test)
+                    data.extend(fetch_remote_sub(url))
+                    continue
+                if proxy_test:
+                    data.append(proxy_test)
             encoded_node = base64.b64encode('\n'.join(data).encode('utf-8')).decode('utf-8')
             response = make_response(send_file(BytesIO(encoded_node.encode('utf-8')), mimetype='text/html', as_attachment=False,
                                     download_name=f'{name}.txt'))
@@ -640,6 +648,10 @@ def get_sub_url(target,name):
                           download_name=name))
             # response.headers['subscription-userinfo'] = 'remarks=22333829939200;'
             return response
+        return jsonify({
+            'code':400,
+            'msg':'不支持的订阅类型'
+        }), 400
 @blue.route('/clash_config',methods=['POST']) #clash配置修改
 @jwt_required()
 def clash_config():
