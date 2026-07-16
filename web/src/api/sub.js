@@ -29,6 +29,12 @@ const RenameSub = (name, obj) => {
 const SetNode = (obj) => { // 修改单个节点
   return request.post('/set_node', obj)
 }
+const SortSubs = (names) => {
+  return request.post('/sort_subs', { names })
+}
+const SetSubLegacy = (name, enabled) => {
+  return request.post('/set_sub_legacy/' + encodeURIComponent(name), { enabled })
+}
 export {
   GetSubs,
   CreateSub,
@@ -39,5 +45,7 @@ export {
   SetSub,
   DecodeSub,
   RenameSub,
-  SetNode
+  SetNode,
+  SortSubs,
+  SetSubLegacy
 }

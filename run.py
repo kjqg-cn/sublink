@@ -4,4 +4,6 @@ app = create_app()
 with app.app_context():
     create_db()
 if __name__ == '__main__':
+    from upgrade_db import upgrade_database
+    upgrade_database(app)
     app.run(host='0.0.0.0',debug=True)

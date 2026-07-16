@@ -21,7 +21,8 @@ import {
   Pagination,
   Collapse,
   CollapseItem,
-  checkbox
+  checkbox,
+  Switch
 } from 'element-ui'
 Vue.use(Button)
 Vue.use(Select)
@@ -45,6 +46,7 @@ Vue.use(Pagination)
 Vue.use(Collapse)
 Vue.use(CollapseItem)
 Vue.use(checkbox)
+Vue.use(Switch)
 Vue.prototype.$msgbox = MessageBox
 Vue.prototype.$confirm = MessageBox.confirm
 Vue.prototype.$prompt = MessageBox.prompt

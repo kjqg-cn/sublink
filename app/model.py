@@ -15,6 +15,9 @@ class Sub(db.Model):#订阅管理
     name = db.Column(db.String(40), unique=False) #订阅名称
     node = db.Column(db.Text, unique=False) #节点
     remarks = db.Column(db.String(40), unique=False) #备注
+    sort_order = db.Column(db.Integer, nullable=False, default=0) #订阅排序
+    access_token = db.Column(db.String(48), nullable=True, index=True) #订阅访问Token
+    legacy_enabled = db.Column(db.Boolean, nullable=False, default=False) #兼容旧地址
 class Login(db.Model):#登录记录
     __tablename__ = 'login'
     id = db.Column(db.Integer, primary_key=True, comment="主键ID")

@@ -6,6 +6,7 @@ COPY migrations migrations
 COPY requirements.txt .
 COPY init_user_pw.py .
 COPY init_login_log.py .
+COPY upgrade_db.py .
 #COPY uwsgi.ini .
 COPY docker-compose.yml .
 #RUN apt-get update && apt-get install -y build-essential
@@ -17,7 +18,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghu
 #RUN pip3 install setuptools wheel
 #RUN pip3 install uwsgi
 ENV PORT=5000
-CMD gunicorn -w 4 -b 0.0.0.0:${PORT} run:app
+CMD python upgrade_db.py && gunicorn -w 4 -b 0.0.0.0:${PORT} run:app
 #CMD uwsgi --ini uwsgi.ini --http-socket=0.0.0.0:${PORT}
 EXPOSE ${PORT}
 

@@ -1,38 +1,17 @@
 <template>
   <div>
-  <el-table
-    :data="list"
-    border
-    style="width: 100%">
-    <el-table-column
-      fixed
-      type="index"
-      label="id"
-    >
-    </el-table-column>
-    <el-table-column
-      prop="node"
-      label="节点"
-      show-overflow-tooltip
-    >
-    </el-table-column>
-    <el-table-column
-      prop="remarks"
-      label="备注"
-      width="100"
-      show-overflow-tooltip
-    >
-    </el-table-column>
-    <el-table-column
-      label="操作"
-      >
-      <template slot-scope="scope">
-        <el-button @click="handleEditPop(scope.row)" type="text" size="small">编辑</el-button>
-        <el-button @click="handleCopy(scope.row)" type="text" size="small">复制</el-button>
-        <el-button @click="handleDel(scope.row)" type="text" size="small">删除</el-button>
-      </template>
-    </el-table-column>
-  </el-table>
+  <div class="node-table">
+    <div class="node-table-row node-table-header"><div>节点</div><div>备注</div><div>操作</div></div>
+    <div class="node-table-row" v-for="item in list" :key="item.id">
+      <div class="node-cell" :title="item.node">{{ item.node }}</div>
+      <div class="node-cell" :title="item.remarks">{{ item.remarks }}</div>
+      <div class="node-actions">
+        <el-button @click="handleEditPop(item)" type="text" size="small">编辑</el-button>
+        <el-button @click="handleCopy(item)" type="text" size="small">复制</el-button>
+        <el-button @click="handleDel(item)" type="text" size="small">删除</el-button>
+      </div>
+    </div>
+  </div>
   <el-dialog
     title="单个节点编辑"
     :visible.sync="dialogVisible"
@@ -82,13 +61,15 @@ export default {
     handleCopy ({ node }) {
       this.$emit('CopySubNode', node)
     },
-    handleDel ({ id }) {
+    handleDel ({ id, node, remarks }) {
       console.log(id)
-      this.$confirm('此操作将永久删除该节点, 是否继续?', '提示', {
-        confirmButtonText: '确定',
+      const nodeLabel = remarks && remarks !== '无备注' ? remarks : node.slice(0, 40)
+      this.$confirm(`删除后无法恢复，确定删除节点“${nodeLabel}”吗？`, '删除节点', {
+        confirmButtonText: '确认删除',
         cancelButtonText: '取消',
         type: 'warning',
-        center: true
+        center: false,
+        customClass: 'delete-sub-confirm'
       }).then(async () => {
         const { code, msg } = await DelSubNode(id)
         if (code === 200) {
@@ -128,3 +109,14 @@ export default {
   }
 }
 </script>
+
+<style scoped>
+.node-table { border: 1px solid #e1e6eb; max-height: clamp(220px, 40vh, 430px); overflow-y: auto; width: 100%; }
+.node-table-row { align-items: center; border-top: 1px solid #edf0f2; display: grid; grid-template-columns: 5fr 3.5fr 1.5fr; min-height: 48px; }
+.node-table-row:first-child { border-top: 0; }
+.node-table-row > div { min-width: 0; padding: 12px 18px; }
+.node-table-header { background: #f7f9fa; color: #65727e; font-size: 12px; min-height: 42px; position: sticky; top: 0; z-index: 1; }
+.node-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-actions { white-space: nowrap; }
+@media (max-width: 900px) { .node-table-row { grid-template-columns: minmax(260px,5fr) minmax(160px,3.5fr) 150px; } .node-table { overflow-x: auto; } }
+</style>

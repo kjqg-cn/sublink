@@ -4,3 +4,9 @@
 app/db
 box.sh
 build.sh
+adoc
+demo_pic
+sublink-docker-src-v3.tar.gz
+.idea/
+tmp-*.log
+web/dist/

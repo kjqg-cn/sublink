@@ -19,16 +19,17 @@
   <el-dialog
     title="新订阅名称"
     :visible.sync="dialogVisible"
+    width="480px"
     >
     <el-input
       v-model.trim="rename"
       ref="inp"
       @keyup.enter.native="handleRename"
     />
-    <span slot="footer" class="dialog-footer">
-    <el-button @click="dialogVisible = false">取 消</el-button>
-    <el-button type="primary" @click="handleRename">确 定</el-button>
-  </span>
+    <div slot="footer" class="dialog-footer">
+      <el-button @click="handleCancel">取消</el-button>
+      <el-button type="primary" @click="handleRename">确定</el-button>
+    </div>
   </el-dialog>
 </div>
 </template>
@@ -36,6 +37,12 @@
 <script>
 export default {
   name: 'ReName',
+  props: {
+    currentName: {
+      type: String,
+      default: ''
+    }
+  },
   data () {
     return {
       dialogVisible: false,
@@ -44,6 +51,7 @@ export default {
   },
   methods: {
     handleOpen () {
+      this.rename = this.currentName
       this.dialogVisible = true
       this.$nextTick(() => {
         // console.log(this.$refs.inp)
@@ -51,7 +59,15 @@ export default {
       })
     },
     handleRename () {
+      if (!this.rename || this.rename === this.currentName) {
+        this.dialogVisible = false
+        return
+      }
       this.$emit('handleRename', this.rename)
+      this.dialogVisible = false
+      this.rename = ''
+    },
+    handleCancel () {
       this.dialogVisible = false
       this.rename = ''
     },
@@ -63,5 +79,9 @@ export default {
 </script>
 
 <style scoped>
-
+.dialog-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
 </style>

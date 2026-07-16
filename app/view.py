@@ -1,13 +1,60 @@
 import datetime
 import requests,json
+import urllib3
 from io import BytesIO
 from flask import Blueprint,request,jsonify,render_template,send_file,make_response
 from .model import *
-import base64,yaml,urllib.parse,os,re
+import base64,yaml,urllib.parse,os,re,secrets,string
 from flask_jwt_extended import jwt_required,get_jwt_identity,create_access_token,create_refresh_token
 blue = Blueprint('blue',__name__)
 path = os.path.dirname(os.path.abspath(__file__))
 subname_list =['vless','vmess','ss','ssr','trojan','hysteria','hy2','hysteria2','http','https']
+remote_sub_types = ('http', 'https')
+rewritable_node_types = ('vless', 'vmess', 'ss', 'ssr', 'trojan', 'hysteria', 'hy2', 'hysteria2')
+hk_name_prefix = '🇭🇰【香港'
+# 在这里补充需要识别的国家关键字。
+node_name_rewrite_rules = [
+    (('SG',), '🇸🇬【新加坡'),
+    (('TYO',), '🇯🇵【东京'),
+    (('LAX',), '🇺🇸【洛杉矶'),
+    (('HOU',), '🇺🇸【休斯顿'),
+    (('LON', 'UK'), '🇬🇧【伦敦'),
+    (('-DE',), '🇩🇪【莱比锡'),
+]
+request_timeout = (3, 8)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+TOKEN_ALPHABET = string.ascii_lowercase + string.digits
+SUBSCRIPTION_DOWNLOAD_NAME = 'v3订阅'
+def new_access_token():
+    return ''.join(secrets.choice(TOKEN_ALPHABET) for _ in range(48))
+
+def get_next_sub_sort_order():
+    max_order = db.session.query(db.func.max(Sub.sort_order)).scalar()
+    return (max_order if max_order is not None else -1) + 1
+
+def get_sub_sort_order(name):
+    sub = Sub.query.filter_by(name=name).order_by(Sub.sort_order.asc(), Sub.id.asc()).first()
+    return sub.sort_order if sub else get_next_sub_sort_order()
+
+def get_access_token(name):
+    sub = Sub.query.filter_by(name=name).first()
+    return sub.access_token if sub else None
+
+def ensure_access_token(name):
+    subs = Sub.query.filter_by(name=name).all()
+    if not subs:
+        return None
+    token = next((sub.access_token for sub in subs if sub.access_token), None)
+    if not token:
+        token = new_access_token()
+    changed = False
+    for sub in subs:
+        if sub.access_token != token:
+            sub.access_token = token
+            changed = True
+    if changed:
+        db.session.commit()
+    return token
 def get_country_emoji(hostname):
     import socket
     # print(hostname)
@@ -96,6 +143,162 @@ def decode_base64_if(text):  # base64解码
         # 如果无法解码为Base64，则返回原始文本
         # print(f'不是base64，错误信息：{str(e)}')
         return text
+def get_proxy_type(node):
+    return node.strip().split('://', 1)[0].lower()
+def get_remote_sub_host(url):
+    return urllib.parse.urlparse(url).hostname
+def encode_base64(text, urlsafe=False):
+    if urlsafe:
+        return base64.urlsafe_b64encode(text.encode('utf-8')).decode('utf-8').rstrip('=')
+    return base64.b64encode(text.encode('utf-8')).decode('utf-8')
+def get_host_port(host, port):
+    if ':' in host and not host.startswith('['):
+        host = f'[{host}]'
+    return f'{host}:{port}'
+def rewrite_info_host_port(info, host, port='443'):
+    prefix = ''
+    host_port = info
+    if '@' in info:
+        prefix, host_port = info.rsplit('@', 1)
+        prefix += '@'
+    if ':' not in host_port:
+        return info, False
+    old_host, _, _ = host_port.rpartition(':')
+    if old_host.strip('[]') != '127.0.0.1':
+        return info, False
+    return prefix + get_host_port(host, port), True
+def rewrite_node_url(node, info):
+    parse = urllib.parse.urlparse(node)
+    return urllib.parse.urlunparse((parse.scheme, info, '', '', parse.query, parse.fragment))
+def rewrite_node_name_text(name):
+    if not name or not name.startswith(hk_name_prefix):
+        return name
+    name_upper = name.upper()
+    for keywords, target_prefix in node_name_rewrite_rules:
+        if any(keyword.upper() in name_upper for keyword in keywords):
+            return target_prefix + name[len(hk_name_prefix):]
+    return name
+def rewrite_query_name(parse, key):
+    pairs = urllib.parse.parse_qsl(parse.query, keep_blank_values=True)
+    new_pairs = []
+    changed = False
+    for item_key, item_value in pairs:
+        if item_key == key:
+            new_value = rewrite_node_name_text(item_value)
+            changed = changed or new_value != item_value
+            item_value = new_value
+        new_pairs.append((item_key, item_value))
+    if not changed:
+        return None
+    return urllib.parse.urlencode(new_pairs)
+def rewrite_fragment_name(node, parse):
+    name = urllib.parse.unquote(parse.fragment)
+    new_name = rewrite_node_name_text(name)
+    if new_name == name:
+        return node
+    return urllib.parse.urlunparse((parse.scheme, parse.netloc, parse.path, parse.params, parse.query, urllib.parse.quote(new_name, safe='')))
+def rewrite_vmess_name(node, parse):
+    if parse.query == '':
+        info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
+        proxy = json.loads(decode_base64_if(info))
+        name = str(proxy.get('ps') or '')
+        new_name = rewrite_node_name_text(name)
+        if new_name == name:
+            return node
+        proxy['ps'] = new_name
+        return f"{parse.scheme}://{encode_base64(json.dumps(proxy, ensure_ascii=False, separators=(',', ':')))}"
+    new_query = rewrite_query_name(parse, 'remarks')
+    if new_query is None:
+        return node
+    return urllib.parse.urlunparse((parse.scheme, parse.netloc, parse.path, parse.params, new_query, parse.fragment))
+def rewrite_ssr_name(node, parse):
+    info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
+    decoded_info = decode_base64_if(info.replace('-', '+').replace('_', '/'))
+    parts = decoded_info.split(':', 5)
+    if len(parts) < 6:
+        return node
+    parse2 = urllib.parse.urlparse(parts[5])
+    pairs = urllib.parse.parse_qsl(parse2.query, keep_blank_values=True)
+    new_pairs = []
+    changed = False
+    for key, value in pairs:
+        if key == 'remarks':
+            name = decode_base64_if(value)
+            new_name = rewrite_node_name_text(name)
+            if new_name != name:
+                value = encode_base64(new_name)
+                changed = True
+        new_pairs.append((key, value))
+    if not changed:
+        return node
+    parts[5] = urllib.parse.urlunparse((parse2.scheme, parse2.netloc, parse2.path, parse2.params, urllib.parse.urlencode(new_pairs), parse2.fragment))
+    return f"{parse.scheme}://{encode_base64(':'.join(parts), urlsafe=True)}"
+def rewrite_node_name(node):
+    try:
+        proxy_type = get_proxy_type(node)
+        parse = urllib.parse.urlparse(node)
+        if proxy_type == 'vmess':
+            return rewrite_vmess_name(node, parse)
+        if proxy_type == 'ssr':
+            return rewrite_ssr_name(node, parse)
+        if proxy_type in rewritable_node_types:
+            return rewrite_fragment_name(node, parse)
+    except Exception as e:
+        print(f'节点名称重写失败:{node} 错误信息:{str(e)}')
+    return node
+def rewrite_remote_node(node, host):
+    node = rewrite_loopback_node(node, host)
+    return rewrite_node_name(node)
+def rewrite_loopback_node(node, host):
+    if not host:
+        return node
+    try:
+        proxy_type = get_proxy_type(node)
+        parse = urllib.parse.urlparse(node)
+        if proxy_type == 'vmess' and parse.query == '':
+            info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
+            proxy = json.loads(decode_base64_if(info))
+            if str(proxy.get('add')).strip('[]') != '127.0.0.1':
+                return node
+            proxy['add'] = host
+            proxy['port'] = '443'
+            return f"{parse.scheme}://{encode_base64(json.dumps(proxy, ensure_ascii=False, separators=(',', ':')))}"
+        if proxy_type == 'vmess':
+            info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
+            rewritten_info, changed = rewrite_info_host_port(decode_base64_if(info), host)
+            if changed:
+                return urllib.parse.urlunparse((parse.scheme, encode_base64(rewritten_info), '', '', parse.query, parse.fragment))
+        if proxy_type == 'ssr':
+            info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
+            decoded_info = decode_base64_if(info.replace('-', '+').replace('_', '/'))
+            parts = decoded_info.split(':', 5)
+            if len(parts) < 6 or parts[0].strip('[]') != '127.0.0.1':
+                return node
+            parts[0] = host
+            parts[1] = '443'
+            return f"{parse.scheme}://{encode_base64(':'.join(parts), urlsafe=True)}"
+        if proxy_type in rewritable_node_types:
+            info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
+            rewritten_info, changed = rewrite_info_host_port(decode_base64_if(info), host)
+            if changed:
+                return rewrite_node_url(node, rewritten_info)
+    except Exception as e:
+        print(f'127.0.0.1节点重写失败:{node} 错误信息:{str(e)}')
+    return node
+def fetch_remote_sub(url):
+    try:
+        try:
+            response = requests.get(url, timeout=request_timeout)
+        except requests.exceptions.SSLError as error:
+            print(f'远程订阅证书校验失败，临时跳过校验重试:{url} 错误信息:{str(error)}')
+            response = requests.get(url, timeout=request_timeout, verify=False)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        print(f'获取远程订阅失败:{url} 错误信息:{str(e)}')
+        return []
+    text = decode_base64_if(response.text)
+    host = get_remote_sub_host(url)
+    return [rewrite_remote_node(line.strip(), host) for line in text.splitlines() if line.strip()]
 class NodeParse():
     def __init__(self):
         # print('初始化')
@@ -499,7 +702,7 @@ def clash_encode(subs): #clash编码
         else:
             safe_clash()
     # 将 Clash 配置转为 YAML 格式
-    with open(path + '/db/clash.yaml', 'r') as file:
+    with open(path + '/db/clash.yaml', 'r', encoding='utf-8') as file:
         data = yaml.safe_load(file)
         data['proxies'] = clash_config['proxies']
         proxy_groups = data.get('proxy-groups')
@@ -584,7 +787,7 @@ def surge_encode(subs):
             safe_surge()
     config_file = path + '/db/surge.conf'
     def add_key_value_to_proxy(new_key_value):
-        with open(config_file, 'r') as file:
+        with open(config_file, 'r', encoding='utf-8') as file:
             surge_config = file.read()
         # 找到 PROXY 节点的位置
         proxy_index = surge_config.find('[Proxy]')
@@ -606,8 +809,15 @@ def surge_encode(subs):
 @blue.route('/sub/<string:target>/<path:name>',methods=['GET']) #订阅地址
 def get_sub_url(target,name):
     if request.method == 'GET':
-        name = decode_base64_if_emoji(name)
-        subs = Sub.query.filter_by(name=name).all()
+        subs = Sub.query.filter_by(access_token=name).order_by(Sub.sort_order.asc(), Sub.id.asc()).all()
+        if not subs:
+            try:
+                legacy_name = decode_base64_if_emoji(name)
+            except Exception:
+                return jsonify({'code': 400, 'msg': '订阅地址格式错误'}), 400
+            subs = Sub.query.filter_by(name=legacy_name, legacy_enabled=True).order_by(
+                Sub.sort_order.asc(), Sub.id.asc()
+            ).all()
         # print(target, subs)
         if not subs:
             return jsonify({
@@ -619,7 +829,7 @@ def get_sub_url(target,name):
             data = clash_encode(subs)
             response = make_response(
                 send_file(BytesIO(data.encode('utf-8')), mimetype='text/plain', as_attachment=False,
-                          download_name=name))
+                          download_name=SUBSCRIPTION_DOWNLOAD_NAME))
 
             # 设置响应头
             # response.headers['subscription-userinfo'] = 'total=22333829939200;remarks=123123'
@@ -637,7 +847,7 @@ def get_sub_url(target,name):
                     data.append(proxy_test)
             encoded_node = base64.b64encode('\n'.join(data).encode('utf-8')).decode('utf-8')
             response = make_response(send_file(BytesIO(encoded_node.encode('utf-8')), mimetype='text/html', as_attachment=False,
-                                    download_name=f'{name}.txt'))
+                                    download_name=f'{SUBSCRIPTION_DOWNLOAD_NAME}.txt'))
             # response.headers['subscription-userinfo'] = 'remarks=22333829939200;'
             return response
         if target == 'surge':
@@ -645,7 +855,7 @@ def get_sub_url(target,name):
             data = interval + '\n' + surge_encode(subs)
             response = make_response(
                 send_file(BytesIO(data.encode('utf-8')), mimetype='text/plain', as_attachment=False,
-                          download_name=name))
+                          download_name=SUBSCRIPTION_DOWNLOAD_NAME))
             # response.headers['subscription-userinfo'] = 'remarks=22333829939200;'
             return response
         return jsonify({
@@ -660,7 +870,7 @@ def clash_config():
         index = data.get('index')
         # print(index)
         if index == 'read':
-            with open(path + '/db/clash.yaml', 'r') as file:
+            with open(path + '/db/clash.yaml', 'r', encoding='utf-8') as file:
                 return jsonify({
                     'code':200,
                     'msg':file.read()
@@ -672,7 +882,7 @@ def clash_config():
                     'code': 400,
                     'msg': '不能为空'
                 })
-            with open(path + '/db/clash.yaml', 'w') as file:
+            with open(path + '/db/clash.yaml', 'w', encoding='utf-8') as file:
                 file.write(text)
                 return jsonify({
                     'code':200,
@@ -686,7 +896,7 @@ def surge_config():
         index = data.get('index')
         # print(index)
         if index == 'read':
-            with open(path + '/db/surge.conf', 'r') as file:
+            with open(path + '/db/surge.conf', 'r', encoding='utf-8') as file:
                 return jsonify({
                     'code':200,
                     'msg':file.read()
@@ -698,7 +908,7 @@ def surge_config():
                     'code': 400,
                     'msg': '不能为空'
                 })
-            with open(path + '/db/surge.conf', 'w') as file:
+            with open(path + '/db/surge.conf', 'w', encoding='utf-8') as file:
                 file.write(text)
                 return jsonify({
                     'code':200,
@@ -758,6 +968,8 @@ def get_create_sub():
                 'code':400,
                 'msg':'订阅名字已经存在'
             })
+        sort_order = get_next_sub_sort_order()
+        access_token = new_access_token()
         for i in nodes:
             if len(i.split('|')) >= 2:
                 node = i.split('|')[0]
@@ -768,7 +980,8 @@ def get_create_sub():
             found = any(keyword in node for keyword in subname_list)
             # print(found, node)
             if node != '' and found:
-                sub = Sub(name=name, node=node, remarks=remarks)
+                sub = Sub(name=name, node=node, remarks=remarks, sort_order=sort_order,
+                          access_token=access_token, legacy_enabled=False)
                 try:
                     db.session.add(sub)
                     db.session.commit()
@@ -801,7 +1014,15 @@ def create_node():
                 'msg': '不是有效的协议,请检查后重新输入'
             })
         if node != '':
-            sub = Sub(name=name, node=node, remarks=remarks)
+            current_sub = Sub.query.filter_by(name=name).order_by(Sub.id.asc()).first()
+            sub = Sub(
+                name=name,
+                node=node,
+                remarks=remarks,
+                sort_order=current_sub.sort_order if current_sub else get_next_sub_sort_order(),
+                access_token=current_sub.access_token if current_sub else new_access_token(),
+                legacy_enabled=current_sub.legacy_enabled if current_sub else False
+            )
             try:
                 db.session.add(sub)
                 db.session.commit()
@@ -820,14 +1041,21 @@ def create_node():
 @jwt_required()
 def get_subs():
     if request.method == 'POST':
-        subs = Sub.query.all()
+        subs = Sub.query.order_by(Sub.sort_order.asc(), Sub.id.asc()).all()
+        for name in {sub.name for sub in subs}:
+            ensure_access_token(name)
+        if subs:
+            subs = Sub.query.order_by(Sub.sort_order.asc(), Sub.id.asc()).all()
         data = []
         for sub in subs:
             item = {
                 'id':sub.id,
                 'name':sub.name,
                 'node':sub.node,
-                'remarks':sub.remarks if sub.remarks !='' else '无备注'
+                'remarks':sub.remarks if sub.remarks !='' else '无备注',
+                'sort_order':sub.sort_order,
+                'access_token':sub.access_token,
+                'legacy_enabled':sub.legacy_enabled
             }
             data.append(item)
         return jsonify(data)
@@ -862,14 +1090,15 @@ def rename_sub(name):
 @jwt_required()
 def get_sub(name):
     if request.method == 'POST':
-        subs = Sub.query.filter_by(name=name).all()
+        subs = Sub.query.filter_by(name=name).order_by(Sub.sort_order.asc(), Sub.id.asc()).all()
         data = []
         for sub in subs:
             item = {
                 'id':sub.id,
                 'name':sub.name,
                 'node':sub.node,
-                'remarks':sub.remarks if sub.remarks !='' else 'null'
+                'remarks':sub.remarks if sub.remarks !='' else 'null',
+                'access_token':sub.access_token
             }
             data.append(item)
         return jsonify(data)
@@ -927,48 +1156,78 @@ def del_sub_node(id):
 @blue.route('/set_sub',methods=['POST']) # 修改节点
 @jwt_required()
 def get_set_sub():
-    remarks = ''
-    newNode = ''
     if request.method == 'POST':
         data = request.get_json()
         name = data.get('name')
-        newNodes = data.get('newNode')
-        subs = Sub.query.filter_by(name=name).all()
-        for sub in subs: # 删除表
-            try:
-                db.session.delete(sub)
-                db.session.commit()
-            except Exception as e:
-                db.session.rollback()
-                db.session.flush()
-                return jsonify({
-                    'code': 400,
-                    'msg': '错误信息：' + str(e)
-                })
-        for i in newNodes: #创立表
-            if len(i.split('|')) >= 2:
-                newNode = i.split('|')[0]
-                remarks = i.split('|')[1]
-            else:
-                newNode = i
-                remarks = ''
-            found = any(keyword in newNode for keyword in subname_list)
-            if newNode != '' and found:
-                sub = Sub(name=name, node=newNode, remarks=remarks)
-                try:
-                    db.session.add(sub)
-                    db.session.commit()
-                except Exception as e:
-                    db.session.rollback()
-                    db.session.flush()
-                    return jsonify({
-                        'code':400,
-                        'msg':'错误信息：' + str(e)
-                    })
+        newNodes = data.get('newNode') or []
+        subs = Sub.query.filter_by(name=name).order_by(Sub.id.asc()).all()
+        if not subs:
+            return jsonify({'code': 400, 'msg': '订阅不存在'})
+        sort_order = subs[0].sort_order if subs else get_next_sub_sort_order()
+        access_token = subs[0].access_token if subs else new_access_token()
+        legacy_enabled = subs[0].legacy_enabled if subs else False
+        parsed_nodes = []
+        for item in newNodes:
+            node, separator, remarks = item.partition('|')
+            node = node.strip()
+            remarks = remarks.strip() if separator else ''
+            if not node:
+                continue
+            if not any(keyword in node for keyword in subname_list):
+                return jsonify({'code': 400, 'msg': f'节点格式不正确：{node[:40]}'})
+            parsed_nodes.append((node, remarks))
+        if not parsed_nodes:
+            return jsonify({'code': 400, 'msg': '至少保留一个有效节点'})
+        try:
+            Sub.query.filter_by(name=name).delete(synchronize_session=False)
+            db.session.add_all([
+                Sub(name=name, node=node, remarks=remarks, sort_order=sort_order,
+                    access_token=access_token, legacy_enabled=legacy_enabled)
+                for node, remarks in parsed_nodes
+            ])
+            db.session.commit()
+            return jsonify({'code': 200, 'msg': '修改成功'})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'code': 400, 'msg': '错误信息：' + str(e)})
+@blue.route('/sort_subs', methods=['POST'])
+@jwt_required()
+def sort_subs():
+    names = request.get_json().get('names', [])
+    if not isinstance(names, list) or len(names) != len(set(names)):
+        return jsonify({'code': 400, 'msg': '订阅排序数据不正确'})
+    existing_names = [row[0] for row in db.session.query(Sub.name).distinct().all()]
+    if set(names) != set(existing_names):
+        return jsonify({'code': 400, 'msg': '订阅列表已变化，请刷新后重试'})
+    try:
+        for sort_order, name in enumerate(names):
+            Sub.query.filter_by(name=name).update({'sort_order': sort_order})
+        db.session.commit()
+        return jsonify({'code': 200, 'msg': '订阅排序已保存'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'code': 400, 'msg': '错误信息：' + str(e)})
+@blue.route('/set_sub_legacy/<path:name>', methods=['POST'])
+@jwt_required()
+def set_sub_legacy(name):
+    data = request.get_json(silent=True) or {}
+    enabled = data.get('enabled')
+    if not isinstance(enabled, bool):
+        return jsonify({'code': 400, 'msg': '旧地址兼容状态不正确'})
+    if not Sub.query.filter_by(name=name).first():
+        return jsonify({'code': 400, 'msg': '订阅不存在'})
+    try:
+        Sub.query.filter_by(name=name).update(
+            {'legacy_enabled': enabled}, synchronize_session=False
+        )
+        db.session.commit()
         return jsonify({
-            'code':200,
-            'msg':'修改成功'
+            'code': 200,
+            'msg': '旧地址兼容已开启' if enabled else '旧地址兼容已关闭'
         })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'code': 400, 'msg': '错误信息：' + str(e)})
 @blue.route('/set_node',methods=['POST']) # 修改单个节点
 @jwt_required()
 def get_set_node():
