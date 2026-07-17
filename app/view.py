@@ -332,20 +332,22 @@ class NodeParse():
             'udp': Udp,
             'skip-cert-verify': SkipCert,
             'tfo': False,
-            'tls': True if query.get('security') else False,
+            'tls': str(query.get('security') or '').lower() not in ('', 'none', 'false', '0'),
         }
         # 替换规则
         if query.get('fp'):
             proxy['client-fingerprint'] = query.get('fp')
         if query.get('sni'):
             proxy['servername'] = query.get('sni')
+        if query.get('alpn'):
+            proxy['alpn'] = [item for item in query.get('alpn').split(',') if item]
         if query.get('flow'):
             proxy['flow'] = query.get('flow')
         if query.get('security') == 'reality':
             proxy['reality-opts'] = {
-                'public-key': query.get('pbk')
+                'public-key': query.get('pbk') or query.get('publicKey')
             }
-            sid = query.get('sid')
+            sid = query.get('sid') or query.get('shortId')
             if sid:
                 proxy['reality-opts']['short-id'] = sid
         if query.get('type') == 'ws':
@@ -355,6 +357,12 @@ class NodeParse():
             host = query.get('host')
             if host:
                 proxy['ws-opts']['headers'] = {'Host': host}
+        if query.get('type') == 'grpc':
+            proxy['grpc-opts'] = {
+                'grpc-service-name': query.get('serviceName') or query.get('service-name') or ''
+            }
+        if str(query.get('insecure') or query.get('allowInsecure') or '').lower() in ('1', 'true'):
+            proxy['skip-cert-verify'] = True
         if query.get('cert'):
             if query.get('cert').lower() == 'true':
                 proxy['skip-cert-verify'] = True
@@ -377,12 +385,16 @@ class NodeParse():
             uuid = info.split('@')[0].split(':')[1]
             server = info.split('@')[1].rsplit(':', 1)[0]
             port = int(info.split('@')[1].rsplit(':', 1)[1])
-            aid = int(query.get('alterId'))
+            aid = int(query.get('alterId') or 0)
             cipher = info.split('@')[0].split(':')[0]
             network = 'ws' if query.get('obfs') == 'websocket' else ''
             tls = query.get('tls')
             pathA = query.get('path')
             host = query.get('obfsParam')
+            sni = query.get('sni') or query.get('peer')
+            fingerprint = query.get('fp')
+            alpn = query.get('alpn')
+            grpc_service_name = query.get('serviceName') or query.get('service-name') or pathA
             if Emoji:
                 name = get_country_emoji(server) + name
             cert = query.get('cert')
@@ -400,6 +412,10 @@ class NodeParse():
             tls = proxy.get('tls')
             pathA = proxy.get('path')
             host = proxy.get('host')
+            sni = proxy.get('sni')
+            fingerprint = proxy.get('fp')
+            alpn = proxy.get('alpn')
+            grpc_service_name = proxy.get('serviceName') or proxy.get('path')
             cert = proxy.get('cert')
             if Emoji:
                 name = get_country_emoji(server) + name
@@ -417,8 +433,14 @@ class NodeParse():
             'alterId': aid,
             'cipher': cipher,
             'network': network,  # 代理的网络类型
-            'tls': True if tls != 'none' and tls != '' else False
+            'tls': str(tls or '').lower() not in ('', 'none', 'false', '0')
         }
+        if sni:
+            proxys['servername'] = sni
+        if fingerprint:
+            proxys['client-fingerprint'] = fingerprint
+        if alpn:
+            proxys['alpn'] = alpn if isinstance(alpn, list) else [item for item in alpn.split(',') if item]
         if cert:
             proxys['skip-cert-verify'] = str(cert).lower() == 'true'
 
@@ -431,11 +453,18 @@ class NodeParse():
                 proxys['ws-opts']['headers'] = {
                     'Host': host
                 }
+        if network == 'grpc':
+            proxys['grpc-opts'] = {
+                'grpc-service-name': grpc_service_name or ''
+            }
         return proxys
     def ss(self):
         parse = urllib.parse.urlparse(self.proxy_test)
         info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
         urlpath = decode_base64_if(info)
+        query = urllib.parse.parse_qs(parse.query)
+        for key, value in query.items():
+            query[key] = value[0]
         # print(f'测试{parse}')
         name = urllib.parse.unquote(parse.fragment)
         # print(urlpath)
@@ -467,6 +496,14 @@ class NodeParse():
             'udp': Udp,
             'skip-cert-verify': SkipCert
         }
+        plugin = query.get('plugin')
+        if plugin:
+            plugin_name, separator, plugin_options = plugin.partition(';')
+            proxy['plugin'] = plugin_name
+            if separator:
+                proxy['plugin-opts'] = plugin_options
+        if query.get('plugin-opts'):
+            proxy['plugin-opts'] = query.get('plugin-opts')
         return proxy
     def ssr(self):
         parse = urllib.parse.urlparse(self.proxy_test.replace('-', '+').replace('_', '/'))
@@ -537,17 +574,25 @@ class NodeParse():
             proxy['client-fingerprint'] = query.get('fp')
         if query.get('sni'):
             proxy['sni'] = query.get('sni')
+        if query.get('alpn'):
+            proxy['alpn'] = [item for item in query.get('alpn').split(',') if item]
         if query.get('flow'):
             proxy['flow'] = query.get('flow')
-        if query.get('type'):
-            if query.get('type') == 'ws':
-                proxy['network'] = query.get('type')
-                proxy['ws-opts'] = {
-                    'path': query.get('path')
-                }
-                host = query.get('host')
-                if host:
-                    proxy['ws-opts']['headers'] = {'Host': host}
+        if query.get('type') in ('ws', 'grpc'):
+            proxy['network'] = query.get('type')
+        if query.get('type') == 'ws':
+            proxy['ws-opts'] = {
+                'path': query.get('path')
+            }
+            host = query.get('host')
+            if host:
+                proxy['ws-opts']['headers'] = {'Host': host}
+        if query.get('type') == 'grpc':
+            proxy['grpc-opts'] = {
+                'grpc-service-name': query.get('serviceName') or query.get('service-name') or ''
+            }
+        if str(query.get('insecure') or query.get('allowInsecure') or '').lower() in ('1', 'true'):
+            proxy['skip-cert-verify'] = True
         if query.get('cert'):
             if query.get('cert').lower() == 'true':
                 proxy['skip-cert-verify'] = True
@@ -584,9 +629,13 @@ class NodeParse():
         if query.get('downmbps'):
             proxy['down'] = query.get('downmbps')
         if query.get('alpn'):
-            proxy['alpn'] = [query.get('alpn')]
-        if query.get('peer'):
-            proxy['sni'] = query.get('peer')
+            proxy['alpn'] = [item for item in query.get('alpn').split(',') if item]
+        if query.get('peer') or query.get('sni'):
+            proxy['sni'] = query.get('peer') or query.get('sni')
+        if query.get('obfs'):
+            proxy['obfs'] = query.get('obfs')
+        if str(query.get('insecure') or '').lower() in ('1', 'true'):
+            proxy['skip-cert-verify'] = True
         if query.get('cert'):
             if query.get('cert').lower() == 'true':
                 proxy['skip-cert-verify'] = True
@@ -622,16 +671,294 @@ class NodeParse():
             query[key] = value[0]
         if query.get('sni'):
             proxy['sni'] = query.get('sni')
+        if query.get('alpn'):
+            proxy['alpn'] = [item for item in query.get('alpn').split(',') if item]
+        if query.get('upmbps'):
+            proxy['up'] = query.get('upmbps')
+        if query.get('downmbps'):
+            proxy['down'] = query.get('downmbps')
         if query.get('obfs') != 'none' and query.get('obfs') != None:
             proxy['obfs'] = query.get('obfs')
         if query.get('obfs-password'):
             proxy['obfs-password'] = query.get('obfs-password')
+        if str(query.get('insecure') or '').lower() in ('1', 'true'):
+            proxy['skip-cert-verify'] = True
         if query.get('cert'):
             if query.get('cert').lower() == 'true':
                 proxy['skip-cert-verify'] = True
             else:
                 proxy['skip-cert-verify'] = False
         return proxy
+
+singbox_node_types = ('vless', 'vmess', 'ss', 'trojan', 'hysteria', 'hy2', 'hysteria2')
+
+def validate_singbox_template(data):
+    if not isinstance(data, dict):
+        raise ValueError('sing-box 配置根节点必须是 JSON 对象')
+    outbounds = data.get('outbounds')
+    if not isinstance(outbounds, list):
+        raise ValueError('sing-box 配置必须包含 outbounds 数组')
+    if not all(isinstance(item, dict) for item in outbounds):
+        raise ValueError('sing-box outbounds 数组只能包含 JSON 对象')
+    tags = [item.get('tag') for item in outbounds]
+    if any(not isinstance(tag, str) or not tag.strip() for tag in tags):
+        raise ValueError('sing-box 每个出站都必须包含非空 tag')
+    if len(tags) != len(set(tags)):
+        raise ValueError('sing-box 出站 tag 不能重复')
+    direct = next((item for item in outbounds if item.get('tag') == 'direct'), None)
+    if not direct or direct.get('type') != 'direct':
+        raise ValueError('sing-box 配置必须保留 tag 为 direct 的出站')
+    if 'auto' in tags:
+        raise ValueError('auto 是节点占位符，不能用作出站 tag')
+    has_auto = any(
+        isinstance(item.get('outbounds'), list) and 'auto' in item.get('outbounds')
+        for item in outbounds
+    )
+    if not has_auto:
+        raise ValueError('sing-box 策略组中必须保留 auto 节点占位符')
+
+def load_singbox_template():
+    with open(path + '/db/sing-box.json', 'r', encoding='utf-8') as file:
+        data = json.load(file)
+    validate_singbox_template(data)
+    return data
+
+def get_unique_singbox_tag(name, used_tags, index):
+    base = str(name or '').strip() or f'node-{index}'
+    tag = base
+    suffix = 2
+    while tag in used_tags:
+        tag = f'{base} ({suffix})'
+        suffix += 1
+    used_tags.add(tag)
+    return tag
+
+def get_singbox_tls(proxy, required=False):
+    reality = proxy.get('reality-opts') or {}
+    enabled = required or bool(proxy.get('tls')) or bool(reality)
+    if not enabled:
+        return None
+    tls = {
+        'enabled': True,
+        'insecure': bool(proxy.get('skip-cert-verify')),
+    }
+    server_name = proxy.get('servername') or proxy.get('sni')
+    if server_name:
+        tls['server_name'] = server_name
+    fingerprint = proxy.get('client-fingerprint')
+    if fingerprint:
+        tls['utls'] = {
+            'enabled': True,
+            'fingerprint': fingerprint,
+        }
+    public_key = reality.get('public-key')
+    if public_key:
+        tls['reality'] = {
+            'enabled': True,
+            'public_key': public_key,
+            'short_id': reality.get('short-id', ''),
+        }
+    alpn = proxy.get('alpn')
+    if alpn:
+        tls['alpn'] = alpn if isinstance(alpn, list) else [item for item in str(alpn).split(',') if item]
+    return tls
+
+def get_singbox_transport(proxy):
+    network = str(proxy.get('network') or '').lower()
+    if network == 'ws':
+        options = proxy.get('ws-opts') or {}
+        transport = {
+            'type': 'ws',
+            'path': options.get('path') or '/',
+        }
+        headers = options.get('headers')
+        if headers:
+            transport['headers'] = headers
+        return transport
+    if network == 'grpc':
+        options = proxy.get('grpc-opts') or {}
+        return {
+            'type': 'grpc',
+            'service_name': options.get('grpc-service-name') or options.get('service-name') or '',
+        }
+    return None
+
+def get_singbox_bandwidth(value):
+    if value in (None, ''):
+        return None
+    match = re.search(r'\d+(?:\.\d+)?', str(value))
+    if not match:
+        return None
+    return int(float(match.group()))
+
+def get_singbox_outbound(proxy_type, proxy, tag):
+    server = proxy.get('server')
+    port = proxy.get('port')
+    if not server or port in (None, ''):
+        raise ValueError('节点缺少服务器地址或端口')
+    common = {
+        'tag': tag,
+        'server': server,
+        'server_port': int(port),
+    }
+    if proxy.get('tfo'):
+        common['tcp_fast_open'] = True
+
+    if proxy_type == 'vless':
+        outbound = {
+            'type': 'vless',
+            **common,
+            'uuid': proxy.get('uuid'),
+        }
+        if proxy.get('flow'):
+            outbound['flow'] = proxy.get('flow')
+        tls = get_singbox_tls(proxy)
+        transport = get_singbox_transport(proxy)
+        if tls:
+            outbound['tls'] = tls
+        if transport:
+            outbound['transport'] = transport
+        return outbound
+
+    if proxy_type == 'vmess':
+        outbound = {
+            'type': 'vmess',
+            **common,
+            'uuid': proxy.get('uuid'),
+            'security': proxy.get('cipher') or 'auto',
+            'alter_id': int(proxy.get('alterId') or 0),
+        }
+        tls = get_singbox_tls(proxy)
+        transport = get_singbox_transport(proxy)
+        if tls:
+            outbound['tls'] = tls
+        if transport:
+            outbound['transport'] = transport
+        return outbound
+
+    if proxy_type == 'ss':
+        outbound = {
+            'type': 'shadowsocks',
+            **common,
+            'method': proxy.get('cipher'),
+            'password': proxy.get('password'),
+        }
+        if proxy.get('plugin'):
+            outbound['plugin'] = proxy.get('plugin')
+        if proxy.get('plugin-opts'):
+            outbound['plugin_opts'] = proxy.get('plugin-opts')
+        return outbound
+
+    if proxy_type == 'trojan':
+        outbound = {
+            'type': 'trojan',
+            **common,
+            'password': proxy.get('password'),
+            'tls': get_singbox_tls(proxy, required=True),
+        }
+        transport = get_singbox_transport(proxy)
+        if transport:
+            outbound['transport'] = transport
+        return outbound
+
+    if proxy_type == 'hysteria':
+        outbound = {
+            'type': 'hysteria',
+            **common,
+            'tls': get_singbox_tls(proxy, required=True),
+        }
+        if proxy.get('auth_str'):
+            outbound['auth_str'] = proxy.get('auth_str')
+        if proxy.get('obfs'):
+            outbound['obfs'] = proxy.get('obfs')
+        up_mbps = get_singbox_bandwidth(proxy.get('up'))
+        down_mbps = get_singbox_bandwidth(proxy.get('down'))
+        if not up_mbps or not down_mbps:
+            raise ValueError('Hysteria 节点缺少有效的上下行带宽')
+        outbound['up_mbps'] = up_mbps
+        outbound['down_mbps'] = down_mbps
+        return outbound
+
+    if proxy_type in ('hy2', 'hysteria2'):
+        outbound = {
+            'type': 'hysteria2',
+            **common,
+            'password': proxy.get('password') or proxy.get('auth'),
+            'tls': get_singbox_tls(proxy, required=True),
+        }
+        up_mbps = get_singbox_bandwidth(proxy.get('up'))
+        down_mbps = get_singbox_bandwidth(proxy.get('down'))
+        if up_mbps is not None:
+            outbound['up_mbps'] = up_mbps
+        if down_mbps is not None:
+            outbound['down_mbps'] = down_mbps
+        if proxy.get('obfs') and proxy.get('obfs-password'):
+            outbound['obfs'] = {
+                'type': proxy.get('obfs'),
+                'password': proxy.get('obfs-password'),
+            }
+        return outbound
+
+    raise ValueError(f'不支持的节点类型: {proxy_type}')
+
+def parse_singbox_node(proxy_type, node):
+    node_parse = NodeParse()
+    node_parse.proxy_test = node
+    method = 'hysteria2' if proxy_type in ('hy2', 'hysteria2') else proxy_type
+    return getattr(node_parse, method)()
+
+def singbox_encode(subs):
+    data = load_singbox_template()
+    template_outbounds = data['outbounds']
+    used_tags = {
+        outbound.get('tag')
+        for outbound in template_outbounds
+        if isinstance(outbound, dict) and outbound.get('tag')
+    }
+    node_outbounds = []
+    node_tags = []
+
+    def add_node(node):
+        proxy_type = get_proxy_type(node)
+        if proxy_type == 'ssr':
+            print('sing-box跳过不支持的节点类型:ssr')
+            return
+        if proxy_type not in singbox_node_types:
+            print(f'sing-box跳过不支持的节点类型:{proxy_type}')
+            return
+        try:
+            proxy = parse_singbox_node(proxy_type, node)
+            tag = get_unique_singbox_tag(proxy.get('name'), used_tags, len(node_tags) + 1)
+            node_outbounds.append(get_singbox_outbound(proxy_type, proxy, tag))
+            node_tags.append(tag)
+        except Exception as e:
+            print(f'sing-box节点解析失败，类型:{proxy_type} 错误信息:{str(e)}')
+
+    for sub in subs:
+        node = sub.node.strip()
+        proxy_type = get_proxy_type(node)
+        if proxy_type in remote_sub_types:
+            for remote_node in fetch_remote_sub(node):
+                add_node(remote_node)
+        elif node:
+            add_node(node)
+
+    replacements = node_tags or ['direct']
+    for outbound in template_outbounds:
+        choices = outbound.get('outbounds') if isinstance(outbound, dict) else None
+        if not isinstance(choices, list) or 'auto' not in choices:
+            continue
+        expanded = []
+        for choice in choices:
+            values = replacements if choice == 'auto' else [choice]
+            for value in values:
+                if value not in expanded:
+                    expanded.append(value)
+        outbound['outbounds'] = expanded
+
+    data['outbounds'] = node_outbounds + template_outbounds
+    return json.dumps(data, ensure_ascii=False, indent=2) + '\n'
+
 def clash_encode(subs): #clash编码
     # 初始化 Clash 配置
     clash_config = {
@@ -802,7 +1129,7 @@ def surge_encode(subs):
         return surge_config
     # 调用方法，传入配置文件路径和新的键值对
     config_text = add_key_value_to_proxy('\n'.join(surge_config['proxy']))
-    autos = ','.join(proxy_name_list)
+    autos = ','.join(proxy_name_list) or 'DIRECT'
     config_text = re.sub('auto', autos, config_text)
 
     return config_text
@@ -858,6 +1185,17 @@ def get_sub_url(target,name):
                           download_name=SUBSCRIPTION_DOWNLOAD_NAME))
             # response.headers['subscription-userinfo'] = 'remarks=22333829939200;'
             return response
+        if target == 'sing-box':
+            try:
+                data = singbox_encode(subs)
+            except (OSError, ValueError, json.JSONDecodeError) as e:
+                return jsonify({
+                    'code': 500,
+                    'msg': f'sing-box 配置生成失败:{str(e)}'
+                }), 500
+            return make_response(
+                send_file(BytesIO(data.encode('utf-8')), mimetype='application/json', as_attachment=False,
+                          download_name=f'{SUBSCRIPTION_DOWNLOAD_NAME}.json'))
         return jsonify({
             'code':400,
             'msg':'不支持的订阅类型'
@@ -914,6 +1252,45 @@ def surge_config():
                     'code':200,
                     'msg':'保存成功'
                 })
+
+@blue.route('/singbox_config',methods=['POST']) #sing-box配置修改
+@jwt_required()
+def singbox_config():
+    if request.method == 'POST':
+        data = request.get_json()
+        index = data.get('index')
+        config_file = path + '/db/sing-box.json'
+        if index == 'read':
+            with open(config_file, 'r', encoding='utf-8') as file:
+                return jsonify({
+                    'code':200,
+                    'msg':file.read()
+                })
+        if index == 'save':
+            text = data.get('text')
+            if not text:
+                return jsonify({
+                    'code':400,
+                    'msg':'不能为空'
+                })
+            try:
+                config = json.loads(text)
+                validate_singbox_template(config)
+            except (ValueError, json.JSONDecodeError) as e:
+                return jsonify({
+                    'code':400,
+                    'msg':f'配置格式错误:{str(e)}'
+                })
+            with open(config_file, 'w', encoding='utf-8') as file:
+                file.write(text)
+            return jsonify({
+                'code':200,
+                'msg':'保存成功'
+            })
+        return jsonify({
+            'code':400,
+            'msg':'不支持的操作'
+        })
 
 @blue.route('/') #前台程序
 def get_index():

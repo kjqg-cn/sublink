@@ -1,6 +1,6 @@
 # Sublink v3
 
-Sublink 是一个面向个人使用的自托管订阅管理工具，用于集中保存代理节点，并生成 V2Ray、Clash 和 Surge 订阅地址。
+Sublink 是一个面向个人使用的自托管订阅管理工具，用于集中保存代理节点，并生成 V2Ray、Clash、Surge 和 sing-box 订阅地址。
 
 > 本项目基于 [jaaksii/sublink](https://github.com/jaaksii/sublink) Fork 并继续维护。
 > v3 是本仓库自行维护的版本，并非原项目官方版本。感谢原作者和历史贡献者提供的基础实现。
@@ -30,11 +30,11 @@ Sublink 是一个面向个人使用的自托管订阅管理工具，用于集中
 - 创建、编辑、复制和删除节点
 - 批量编辑订阅节点
 - 调整订阅显示顺序
-- 生成 V2Ray、Clash、Surge 订阅
+- 生成 V2Ray、Clash、Surge 和 sing-box 订阅
 - 将 HTTP/HTTPS 远程订阅展开到生成结果中
 - 通过 Token 地址访问订阅
 - 为仍在使用旧地址的客户端单独开启兼容模式
-- 管理 Clash、Surge 基础配置
+- 管理 Clash、Surge 和 sing-box 基础配置
 - 修改管理账号并查看登录记录
 
 支持管理的节点类型包括：
@@ -49,7 +49,10 @@ v3 默认生成随机 Token 地址：
 http://服务器地址/sub/v2ray/<token>
 http://服务器地址/sub/clash/<token>
 http://服务器地址/sub/surge/<token>
+http://服务器地址/sub/sing-box/<token>
 ```
+
+sing-box 地址返回可直接导入官方图形客户端的完整远程 Profile，默认包含 TUN、DNS、手动选择、自动测速，以及中国大陆和局域网直连规则。支持转换 `vless`、`vmess`、`ss`、`trojan`、`hysteria` 和 `hysteria2` 节点；`SSR` 节点不在sing-box支持范围内。
 
 - Token 地址不会因为修改订阅名称而变化
 - 客户端默认显示名称为 `v3订阅`

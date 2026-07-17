@@ -79,6 +79,7 @@
               </el-select>
               <MyClash v-if="EDIT.value === 'clash'" style="margin-left: 10px"></MyClash>
               <MySurge v-if="EDIT.value === 'surge'" style="margin-left: 10px"></MySurge>
+              <MySingBox v-if="EDIT.value === 'sing-box'" style="margin-left: 10px"></MySingBox>
             </div>
             <div v-if="optionSub !== ''">
               <div class="address-label"><el-tag type="success">Token 新地址</el-tag><span>新客户端请使用此地址</span></div>
@@ -166,6 +167,7 @@ import { SetConfig, GetConfig } from '@/api/config'
 import USER from '@/components/user'
 import MyClash from '@/components/clash'
 import MySurge from '@/components/surge'
+import MySingBox from '@/components/singbox'
 import MyAddress from '@/components/address'
 import Nodelist from '@/components/nodelist'
 import Rename from '@/components/rename'
@@ -195,7 +197,7 @@ export default {
       batchDialogVisible: false,
       EDIT: {
         value: 'v2ray',
-        option: ['v2ray', 'clash', 'surge']
+        option: ['v2ray', 'clash', 'surge', 'sing-box']
       },
       isQrShow: false,
       QrTest: '',
@@ -493,6 +495,7 @@ export default {
     USER,
     MyClash,
     MySurge,
+    MySingBox,
     MyAddress,
     Nodelist,
     MyParser,
