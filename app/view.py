@@ -1292,9 +1292,15 @@ def singbox_config():
             'msg':'不支持的操作'
         })
 
-@blue.route('/') #前台程序
+@blue.route('/') #前台程序（老版 UI）
 def get_index():
     return render_template('index.html')
+@blue.route('/next') #新版 UI（Vue3 + Vite，hash 路由，产物在 static/next）
+def get_index_next():
+    index_path = os.path.join(path, 'static', 'next', 'index.html')
+    if not os.path.exists(index_path):
+        return '新版前端尚未构建，请先在 web/next 执行 npm run build', 404
+    return send_file(index_path)
 @blue.route('/login',methods=['POST'])
 def get_login():
     if request.method == 'POST':
@@ -1347,6 +1353,8 @@ def get_create_sub():
             })
         sort_order = get_next_sub_sort_order()
         access_token = new_access_token()
+        added = 0
+        invalid = []
         for i in nodes:
             if len(i.split('|')) >= 2:
                 node = i.split('|')[0]
@@ -1354,14 +1362,18 @@ def get_create_sub():
             else:
                 node = i
                 remarks = ''
+            node = node.strip()
+            if node == '':
+                continue
             found = any(keyword in node for keyword in subname_list)
             # print(found, node)
-            if node != '' and found:
+            if found:
                 sub = Sub(name=name, node=node, remarks=remarks, sort_order=sort_order,
                           access_token=access_token, legacy_enabled=False)
                 try:
                     db.session.add(sub)
                     db.session.commit()
+                    added += 1
                 except Exception as e:
                     db.session.rollback()
                     db.session.flush()
@@ -1369,6 +1381,18 @@ def get_create_sub():
                         'code':400,
                         'msg':'错误信息：' + str(e)
                     })
+            else:
+                invalid.append(node[:40])
+        if added == 0:
+            return jsonify({
+                'code':400,
+                'msg':'没有可用的节点，请检查节点格式'
+            })
+        if invalid:
+            return jsonify({
+                'code':200,
+                'msg':'创建成功，已跳过 %d 个无效节点' % len(invalid)
+            })
         return jsonify({
             'code':200,
             'msg':'创建成功'
@@ -1429,7 +1453,7 @@ def get_subs():
                 'id':sub.id,
                 'name':sub.name,
                 'node':sub.node,
-                'remarks':sub.remarks if sub.remarks !='' else '无备注',
+                'remarks':sub.remarks,
                 'sort_order':sub.sort_order,
                 'access_token':sub.access_token,
                 'legacy_enabled':sub.legacy_enabled
@@ -1474,8 +1498,9 @@ def get_sub(name):
                 'id':sub.id,
                 'name':sub.name,
                 'node':sub.node,
-                'remarks':sub.remarks if sub.remarks !='' else 'null',
-                'access_token':sub.access_token
+                'remarks':sub.remarks,
+                'access_token':sub.access_token,
+                'legacy_enabled':sub.legacy_enabled
             }
             data.append(item)
         return jsonify(data)

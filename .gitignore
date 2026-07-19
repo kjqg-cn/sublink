@@ -10,3 +10,5 @@ sublink-docker-src-v3.tar.gz
 .idea/
 tmp-*.log
 web/dist/
+web/node_modules/
+web/next/node_modules/
