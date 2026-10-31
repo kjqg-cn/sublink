@@ -62,7 +62,7 @@ instance.interceptors.response.use(
   (response) => response.data,
   (error) => {
     const status = error?.response?.status
-    if (status === 400 || status === 401) {
+    if (status === 401) {
       clearAuthAndReload()
     }
     return Promise.reject(error)

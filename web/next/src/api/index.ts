@@ -107,6 +107,9 @@ export interface GlobalConfig {
   udp: boolean
   skipcert: boolean
   emoji: boolean
+  custom: boolean
+  custom_loopback: boolean
+  custom_node_name: boolean
 }
 
 export const getConfig = () => request.post('/get_conifg') as Promise<Partial<GlobalConfig>>

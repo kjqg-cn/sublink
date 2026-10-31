@@ -1,3 +1,11 @@
 app/db
 box.sh
 build.sh
+.git
+__pycache__
+*.py[cod]
+.pytest_cache
+web/node_modules
+web/dist
+web/next/node_modules
+web/next/dist

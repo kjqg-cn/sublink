@@ -41,7 +41,7 @@ npm run build    # 构建产物到 app/static/next，通过 /next 访问
 - 支持拖动调整订阅顺序
 - 使用随机 Token 生成订阅地址，避免在地址中直接暴露订阅名称
 - 支持按订阅开启旧版 Base64 地址兼容
-- 支持远程订阅展开，以及节点地址和名称重写
+- 支持远程订阅展开，并在「全局设置」中提供自定义功能（支持回环地址/端口重写、节点名称与国旗修正，以及中转 IPv6 订阅标识自动延续）
 - 创建订阅时校验节点有效性，无有效节点时不再误报「创建成功」，并提示跳过的无效节点数量
 - 增加数据库迁移和启动时自动升级
 - 统一客户端默认订阅名称为 `v3订阅`
@@ -96,7 +96,8 @@ v3 默认从当前 Git 仓库获取代码并在服务器本地构建镜像，不
 | --- | --- |
 | 镜像 | `sublink:v3` |
 | 容器 | `sublink-v3` |
-| 对外端口 | `8000` |
+| 网络模式 | `host` |
+| 监听端口 | `8000` |
 | 数据目录 | `/root/sublink-v3/db` |
 | 仓库目录 | `/root/sublink-v3/release` |
 
@@ -118,6 +119,8 @@ git pull --ff-only
 
 ### 2. 构建镜像
 
+> 本项目 Dockerfile 已采用多阶段构建，在构建时会自动完成 Vue 2 老版与 Vue 3 新版双端前端的编译与产物嵌入，无需在开发机提前手动 build 或提交打包产物。
+
 ```bash
 cd /root/sublink-v3/release
 docker build -t sublink:v3 .
@@ -128,11 +131,15 @@ docker build -t sublink:v3 .
 ```bash
 docker run -d --restart always \
   --name sublink-v3 \
-  -p 8000:5000 \
+  --network host \
   -v /root/sublink-v3/db:/app/app/db \
-  -e PORT=5000 \
+  -e PORT=8000 \
+  -e JWT_SECRET_KEY=自定义高强度随机密钥 \
   sublink:v3
 ```
+
+- `-e PORT=8000`：使用 `--network host` 模式时，该端口直接在宿主机监听；
+- `-e JWT_SECRET_KEY=...`：**强烈建议设置强随机字符串**，防止公网暴露时因默认密钥导致管理令牌被伪造；未设置时回退至内置兼容密钥。
 
 容器启动时会自动执行 `upgrade_db.py`：
 
@@ -200,7 +207,7 @@ fi
 
 ### 3. 拉取代码并构建镜像
 
-> 新版界面（`/next`）采用「源码与产物分离」，`docker build` 不会编译前端。如果本次更新改动过 `web/next` 源码，需先在开发机执行 `cd web/next && npm run build`，将 `app/static/next` 下的最新产物一并提交，再在服务器 `git pull`。否则线上 `/next` 仍是旧版本，老版界面（`/`）不受影响。
+> Dockerfile 现已采用多阶段构建，镜像构建时会自动完成 Vue 2 与 Vue 3 双端前端源码的编译并嵌入静态资源，无需在开发机提交前端打包产物。
 
 服务器上的仓库没有未提交改动时，执行：
 
@@ -218,9 +225,10 @@ docker build -t sublink:v3 .
 docker rm sublink-v3
 docker run -d --restart always \
   --name sublink-v3 \
-  -p 8000:5000 \
+  --network host \
   -v /root/sublink-v3/db:/app/app/db \
-  -e PORT=5000 \
+  -e PORT=8000 \
+  -e JWT_SECRET_KEY=自定义高强度随机密钥 \
   sublink:v3
 ```
 
@@ -235,9 +243,10 @@ docker rm -f sublink-v3 2>/dev/null || true
 docker tag sublink:v3-backup sublink:v3
 docker run -d --restart always \
   --name sublink-v3 \
-  -p 8000:5000 \
+  --network host \
   -v /root/sublink-v3/db:/app/app/db \
-  -e PORT=5000 \
+  -e PORT=8000 \
+  -e JWT_SECRET_KEY=自定义高强度随机密钥 \
   sublink:v3
 ```
 

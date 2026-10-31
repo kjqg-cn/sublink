@@ -47,8 +47,9 @@ class Xui():
                     'protocol': obj['protocol'],
                 }
                 print(data)
-xui = Xui()
-xui.url = 'http://127.0.0.1:12345'
-login = xui.Login('admin','admin')
-if login:
-    xui.List()
+if __name__ == '__main__':
+    xui = Xui()
+    xui.url = 'http://127.0.0.1:12345'
+    login = xui.Login('admin', 'admin')
+    if login:
+        xui.List()

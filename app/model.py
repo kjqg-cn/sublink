@@ -40,7 +40,6 @@ def create_db():
             db.session.commit()
         except Exception as e:
             db.session.rollback()
-            db.session.flush()
             print('错误信息:'+str(e))
     def init_db(FilePath, NewFilePath):
         path = os.path.dirname(os.path.abspath(__file__))
@@ -50,10 +49,14 @@ def create_db():
     init_db('/clash.yaml', '/db/clash.yaml')
     init_db('/surge.conf', '/db/surge.conf')
     init_db('/sing-box.json', '/db/sing-box.json')
+    try:
+        from .view import load_config
+        load_config()
+    except Exception:
+        pass
 def init_user_pass():
     def handle_error(e):
         db.session.rollback()
-        db.session.flush()
         print('错误信息:' + str(e))
 
     try:
@@ -73,7 +76,6 @@ def init_user_pass():
 def init_login_log():
     def handle_error(e):
         db.session.rollback()
-        db.session.flush()
         print('错误信息:' + str(e))
 
     try:

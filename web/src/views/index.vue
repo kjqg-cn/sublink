@@ -137,10 +137,45 @@
           <div v-if="radio1 === '3'">
             <MyParser></MyParser>
           </div>
-          <div v-if="radio1 === '4'" @change="handleConfig">
-            <el-checkbox v-model="Config.udp">udp</el-checkbox>
-            <el-checkbox v-model="Config.skipCert">跳过证书</el-checkbox>
-            <el-checkbox v-model="Config.emoji">emoji入口国旗</el-checkbox>
+          <div v-if="radio1 === '4'" class="settings-container" @change="handleConfig">
+            <div class="setting-item">
+              <el-checkbox v-model="Config.udp" @change="handleConfig">开启 UDP</el-checkbox>
+              <el-tooltip effect="dark" content="控制导出的客户端配置（如 Clash 的 udp: true、Surge 的 udp-relay）。开启后客户端才会向节点发送 UDP 流量（用于游戏、语音通话及 QUIC 等）；若关闭，客户端将在本地禁止该节点的 UDP 转发。" placement="top">
+                <i class="el-icon-question help-icon"></i>
+              </el-tooltip>
+            </div>
+            <div class="setting-item">
+              <el-checkbox v-model="Config.skipCert" @change="handleConfig">跳过证书验证</el-checkbox>
+              <el-tooltip effect="dark" content="在客户端配置中跳过 TLS 证书合法性校验（skip-cert-verify）。可解决自签名证书或域名不匹配导致的连接失败，但会降低传输安全性。" placement="top">
+                <i class="el-icon-question help-icon"></i>
+              </el-tooltip>
+            </div>
+            <div class="setting-item">
+              <el-checkbox v-model="Config.emoji" @change="handleConfig">emoji 入口国旗</el-checkbox>
+              <el-tooltip effect="dark" content="根据节点服务器 IP 自动查询地理位置并在节点名称前添加对应国旗 Emoji。注意：节点较多时会因请求外部 IP 接口增加订阅生成耗时。" placement="top">
+                <i class="el-icon-question help-icon"></i>
+              </el-tooltip>
+            </div>
+            <div class="setting-item">
+              <el-checkbox v-model="Config.custom" @change="handleConfig">开启自定义功能</el-checkbox>
+              <el-tooltip effect="dark" content="该功能为作者定制规则，仅在拉取远程订阅时生效。如不了解具体逻辑，请保持关闭。" placement="top">
+                <i class="el-icon-question help-icon"></i>
+              </el-tooltip>
+            </div>
+            <div v-if="Config.custom" class="sub-settings-container">
+              <div class="setting-item">
+                <el-checkbox v-model="Config.customLoopback" @change="handleConfig">回环地址与端口重写</el-checkbox>
+                <el-tooltip effect="dark" content="将远程订阅中地址为 127.0.0.1 的节点服务器自动替换为订阅域名，并将端口强制改为 443（适用于通过本地隧道回环中转的场景）。" placement="top">
+                  <i class="el-icon-question help-icon"></i>
+                </el-tooltip>
+              </div>
+              <div class="setting-item">
+                <el-checkbox v-model="Config.customNodeName" @change="handleConfig">节点名称与国旗重写</el-checkbox>
+                <el-tooltip effect="dark" content="识别以“🇭🇰【香港”开头且带有 SG/TYO/LAX 等地区代号的中转节点，自动修正为对应落地国家的国旗与城市名称（如新加坡、东京等）；若远程订阅域名/目标为 IPv6，自动将线路标识标记为 IPv6。" placement="top">
+                  <i class="el-icon-question help-icon"></i>
+                </el-tooltip>
+              </div>
+            </div>
           </div>
         </el-tab-pane>
 
@@ -211,7 +246,10 @@ export default {
       Config: {
         udp: false,
         skipCert: false,
-        emoji: false
+        emoji: false,
+        custom: false,
+        customLoopback: false,
+        customNodeName: false
       }
     }
   },
@@ -476,7 +514,10 @@ export default {
         const { code, msg } = await SetConfig({
           udp: this.Config.udp,
           skipcert: this.Config.skipCert,
-          emoji: this.Config.emoji
+          emoji: this.Config.emoji,
+          custom: this.Config.custom,
+          custom_loopback: this.Config.customLoopback,
+          custom_node_name: this.Config.customNodeName
         })
         this.$message({
           type: code === 200 ? 'success' : 'warning',
@@ -485,10 +526,15 @@ export default {
       }, 1000)
     },
     async GetConfig () {
-      const { udp, skipcert, emoji } = await GetConfig()
-      this.Config.udp = udp
-      this.Config.skipCert = skipcert
-      this.Config.emoji = emoji
+      const res = await GetConfig()
+      if (res) {
+        this.Config.udp = !!res.udp
+        this.Config.skipCert = !!res.skipcert
+        this.Config.emoji = !!res.emoji
+        this.Config.custom = !!res.custom
+        this.Config.customLoopback = !!res.custom_loopback
+        this.Config.customNodeName = !!res.custom_node_name
+      }
     }
   },
   components: {
@@ -743,6 +789,30 @@ export default {
 }
 .subscription-editor-main ::v-deep .el-table__fixed-right {
   box-shadow: -6px 0 10px rgba(31, 45, 61, .06);
+}
+.settings-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.setting-item {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+.sub-settings-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 24px;
+}
+.help-icon {
+  color: #909399;
+  cursor: pointer;
+  font-size: 15px;
+}
+.help-icon:hover {
+  color: #606266;
 }
 @media (max-width: 768px) {
   .box-card {

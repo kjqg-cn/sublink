@@ -10,7 +10,7 @@ def create_app():
     db_url = 'sqlite:///' + path + '/db/sub.db'
     app.config['SQLALCHEMY_DATABASE_URI'] = db_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    app.config["JWT_SECRET_KEY"] = "sub"
+    app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY") or "sub"
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=30)  #30分钟后过期
     app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(days=15)  #15天后刷新令牌过期
     app.config['TRUSTED_PROXIES'] = ['proxy_ip']
