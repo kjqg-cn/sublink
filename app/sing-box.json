@@ -98,21 +98,26 @@
         "type": "remote",
         "tag": "geosite-cn",
         "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-        "download_detour": "proxy"
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
       },
       {
         "type": "remote",
         "tag": "geoip-cn",
         "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-        "download_detour": "proxy"
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
       }
     ],
     "final": "proxy",
     "auto_detect_interface": true,
-    "default_domain_resolver": "dns-direct"
+    "default_domain_resolver": "dns-direct",
+    "default_http_client": "remote-client"
   },
+  "http_clients": [
+    {
+      "tag": "remote-client",
+      "detour": "proxy"
+    }
+  ],
   "experimental": {
     "cache_file": {
       "enabled": true

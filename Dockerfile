@@ -6,23 +6,23 @@ WORKDIR /build
 
 # Build Vue 2 (Legacy frontend)
 COPY web/package*.json ./web/
-RUN cd web && npm install --registry=https://registry.npmmirror.com
+RUN cd web && npm install --legacy-peer-deps --registry=https://registry.npmmirror.com
 COPY web ./web
 RUN cd web && npm run build -- --no-clean
 
 # Build Vue 3 (Next frontend)
 COPY web/next/package*.json ./web/next/
-RUN cd web/next && npm install --registry=https://registry.npmmirror.com
+RUN cd web/next && npm install --legacy-peer-deps --registry=https://registry.npmmirror.com
 COPY web/next ./web/next
 RUN cd web/next && npm run build
 
 # =========================
 # Stage 2: Runtime Image
 # =========================
-FROM python:3.8.13-slim
+FROM python:3.10-slim
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y tzdata gcc && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Shanghai
 
 COPY requirements.txt .

@@ -26,7 +26,7 @@ request_timeout = (3, 8)
 _ORIGINAL_REQUESTS_GET = requests.get
 
 DEFAULT_SUB_HEADERS = {
-    'User-Agent': 'Sublink/3.0 (compatible; Clash/1.18.0; v2rayN/6.23)'
+    'User-Agent': 'Sublink/3.0 (compatible; v2rayN/6.23)'
 }
 
 REMOTE_SUB_CACHE_TTL = 180  # 3 minutes cache for remote subscriptions
@@ -213,7 +213,10 @@ def fetch_remote_sub(url: str, use_cache: bool = True) -> List[str]:
 
     text = _decode_base64_if(response.text)
     host = get_remote_sub_host(url)
-    nodes = [_rewrite_remote_node(line.strip(), host) for line in text.splitlines() if line.strip()]
+    raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    from app.core.utils import get_proxy_type, subname_list
+    valid_lines = [line for line in raw_lines if get_proxy_type(line) in subname_list]
+    nodes = [_rewrite_remote_node(line, host) for line in valid_lines]
 
     if not is_testing:
         with _cache_lock:
