@@ -1,11 +1,14 @@
 version: '3'
+
 services:
   sublink:
-    image: jaaksi/sublink
-    container_name: sublink
-    ports:
-      - 8000:5000
+    build: .
+    image: sublink:v3
+    container_name: sublink-v3
+    restart: always
+    network_mode: host
     volumes:
       - $PWD/db:/app/app/db
     environment:
-      - PORT=5000
+      - PORT=8000
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-sub}

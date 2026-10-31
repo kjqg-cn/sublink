@@ -100,6 +100,14 @@ def _validate_singbox_json(text: str) -> Optional[str]:
     return None
 
 
+def _validate_surge_conf(text: str) -> Optional[str]:
+    if not text or not text.strip():
+        return '配置内容不能为空'
+    if '[Proxy]' not in text or '[Proxy Group]' not in text:
+        return '配置格式错误: Surge 配置必须同时包含 [Proxy] 与 [Proxy Group] 区块'
+    return None
+
+
 def get_next_sub_sort_order() -> int:
     max_order = db.session.query(db.func.max(Sub.sort_order)).scalar()
     return (max_order if max_order is not None else -1) + 1
@@ -154,30 +162,39 @@ def get_sub_url(target: str, name: str):
     if not subs:
         try:
             legacy_name = decode_base64_if_emoji(name)
+            subs = Sub.query.filter_by(name=legacy_name, legacy_enabled=True).order_by(
+                Sub.sort_order.asc(), Sub.id.asc()
+            ).all()
         except Exception:
-            return jsonify({'code': 400, 'msg': '订阅地址格式错误'}), 400
-        subs = Sub.query.filter_by(name=legacy_name, legacy_enabled=True).order_by(
-            Sub.sort_order.asc(), Sub.id.asc()
-        ).all()
+            subs = []
     if not subs:
-        return jsonify({'code': 400, 'msg': '订阅不存在'})
+        return jsonify({'code': 404, 'msg': '订阅不存在'}), 404
 
     if target == 'clash':
-        data = clash_encode(subs)
+        try:
+            data = clash_encode(subs)
+        except Exception as e:
+            return jsonify({'code': 500, 'msg': f'clash 配置生成失败:{str(e)}'}), 500
         return make_response(send_file(BytesIO(data.encode('utf-8')), mimetype='text/plain',
                                        as_attachment=False, download_name=SUBSCRIPTION_DOWNLOAD_NAME))
     if target == 'v2ray':
-        data = v2ray_encode(subs)
+        try:
+            data = v2ray_encode(subs)
+        except Exception as e:
+            return jsonify({'code': 500, 'msg': f'v2ray 配置生成失败:{str(e)}'}), 500
         return make_response(send_file(BytesIO(data.encode('utf-8')), mimetype='text/html',
                                        as_attachment=False, download_name=f'{SUBSCRIPTION_DOWNLOAD_NAME}.txt'))
     if target == 'surge':
-        data = f'#!MANAGED-CONFIG {request.url} interval=86400 strict=false\n' + surge_encode(subs)
+        try:
+            data = f'#!MANAGED-CONFIG {request.url} interval=86400 strict=false\n' + surge_encode(subs)
+        except Exception as e:
+            return jsonify({'code': 500, 'msg': f'surge 配置生成失败:{str(e)}'}), 500
         return make_response(send_file(BytesIO(data.encode('utf-8')), mimetype='text/plain',
                                        as_attachment=False, download_name=SUBSCRIPTION_DOWNLOAD_NAME))
     if target == 'sing-box':
         try:
             data = singbox_encode(subs)
-        except (OSError, ValueError, json.JSONDecodeError) as e:
+        except Exception as e:
             return jsonify({'code': 500, 'msg': f'sing-box 配置生成失败:{str(e)}'}), 500
         return make_response(send_file(BytesIO(data.encode('utf-8')), mimetype='application/json',
                                        as_attachment=False, download_name=f'{SUBSCRIPTION_DOWNLOAD_NAME}.json'))
@@ -193,7 +210,7 @@ def clash_config():
 @blue.route('/surge_config', methods=['POST'])
 @jwt_required()
 def surge_config():
-    return _handle_config_file('surge.conf')
+    return _handle_config_file('surge.conf', _validate_surge_conf)
 
 
 @blue.route('/singbox_config', methods=['POST'])
@@ -252,29 +269,34 @@ def get_create_sub():
     data = request.get_json() or {}
     name = data.get('name')
     nodes = data.get('node') or []
+    if not name or not str(name).strip():
+        return jsonify({'code': 400, 'msg': '订阅名称不能为空'})
     if Sub.query.filter_by(name=name).first():
         return jsonify({'code': 400, 'msg': '订阅名字已经存在'})
     sort_order = get_next_sub_sort_order()
     access_token = new_access_token()
-    added, invalid = 0, []
+    valid_sub_objects = []
+    invalid = []
     for item in nodes:
         node, _, remarks = item.partition('|')
         node, remarks = node.strip(), remarks.strip()
         if not node:
             continue
         if any(kw in node for kw in subname_list):
-            db.session.add(Sub(name=name, node=node, remarks=remarks, sort_order=sort_order,
-                               access_token=access_token, legacy_enabled=False))
-            try:
-                db.session.commit()
-                added += 1
-            except Exception as e:
-                db.session.rollback()
-                return jsonify({'code': 400, 'msg': f'错误信息：{str(e)}'})
+            valid_sub_objects.append(Sub(
+                name=name, node=node, remarks=remarks, sort_order=sort_order,
+                access_token=access_token, legacy_enabled=False
+            ))
         else:
             invalid.append(node[:40])
-    if added == 0:
+    if not valid_sub_objects:
         return jsonify({'code': 400, 'msg': '没有可用的节点，请检查节点格式'})
+    try:
+        db.session.add_all(valid_sub_objects)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'code': 400, 'msg': f'错误信息：{str(e)}'})
     if invalid:
         return jsonify({'code': 200, 'msg': f'创建成功，已跳过 {len(invalid)} 个无效节点'})
     return jsonify({'code': 200, 'msg': '创建成功'})
@@ -287,10 +309,12 @@ def create_node():
     name = data.get('name')
     remarks = data.get('remarks')
     node = (data.get('node') or '').strip()
-    if not any(kw in node for kw in subname_list):
-        return jsonify({'code': 400, 'msg': '不是有效的协议,请检查后重新输入'})
+    if not name or not str(name).strip():
+        return jsonify({'code': 400, 'msg': '订阅名称不能为空'})
     if not node:
         return jsonify({'code': 400, 'msg': '节点内容不能为空'})
+    if not any(kw in node for kw in subname_list):
+        return jsonify({'code': 400, 'msg': '不是有效的协议,请检查后重新输入'})
     cur = Sub.query.filter_by(name=name).order_by(Sub.id.asc()).first()
     db.session.add(Sub(
         name=name, node=node, remarks=remarks,
@@ -318,8 +342,12 @@ def get_subs():
 @blue.route('/rename_sub/<path:name>', methods=['POST'])
 @jwt_required()
 def rename_sub(name: str):
-    subs = Sub.query.filter_by(name=name).all()
     new_name = (request.get_json() or {}).get('newName')
+    if not new_name or not str(new_name).strip():
+        return jsonify({'code': 400, 'msg': '新名称不能为空'})
+    subs = Sub.query.filter_by(name=name).all()
+    if not subs:
+        return jsonify({'code': 404, 'msg': '订阅不存在'}), 404
     if Sub.query.filter_by(name=new_name).first():
         return jsonify({'code': 400, 'msg': '名字已存在'})
     for s in subs:
@@ -363,6 +391,8 @@ def del_sub_node(id: int):
 def get_set_sub():
     data = request.get_json() or {}
     name = data.get('name')
+    if not name or not str(name).strip():
+        return jsonify({'code': 400, 'msg': '订阅名称不能为空'})
     subs = Sub.query.filter_by(name=name).order_by(Sub.id.asc()).all()
     if not subs:
         return jsonify({'code': 400, 'msg': '订阅不存在'})
@@ -400,7 +430,11 @@ def sort_subs():
     names = (request.get_json() or {}).get('names', [])
     if not isinstance(names, list) or len(names) != len(set(names)):
         return jsonify({'code': 400, 'msg': '订阅排序数据不正确'})
-    existing = [r[0] for r in db.session.query(Sub.name).distinct().all()]
+    existing = [
+        r[0] for r in db.session.query(Sub.name)
+        .filter(Sub.name.isnot(None), Sub.name != '')
+        .distinct().all()
+    ]
     if set(names) != set(existing):
         return jsonify({'code': 400, 'msg': '订阅列表已变化，请刷新后重试'})
     try:

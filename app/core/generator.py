@@ -1,6 +1,7 @@
 """Client subscription configuration generators for Sublink."""
 
 import base64
+import concurrent.futures
 import json
 import os
 import re
@@ -42,16 +43,45 @@ def _get_node_parse(proxy_str: str = '') -> Any:
 
 def expand_node_list(subs: Any) -> List[str]:
     """Expand subscription objects or strings into a flat list of node strings."""
-    raw_nodes = []
+    parsed_items = []
+    remote_urls = []
     for sub in subs:
         node_str = (sub.node if hasattr(sub, 'node') else str(sub)).strip()
         if not node_str:
             continue
         proxy_type = get_proxy_type(node_str)
         if proxy_type in remote_sub_types:
-            raw_nodes.extend(_fetch_remote_sub(node_str))
+            parsed_items.append(('remote', node_str))
+            if node_str not in remote_urls:
+                remote_urls.append(node_str)
         else:
-            raw_nodes.append(node_str)
+            parsed_items.append(('node', node_str))
+
+    if not remote_urls:
+        return [val for kind, val in parsed_items if kind == 'node']
+
+    # Parallel fetch remote subscriptions
+    remote_results: Dict[str, List[str]] = {}
+    if len(remote_urls) == 1:
+        remote_results[remote_urls[0]] = _fetch_remote_sub(remote_urls[0])
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(remote_urls), 10)) as executor:
+            future_to_url = {executor.submit(_fetch_remote_sub, url): url for url in remote_urls}
+            for future in concurrent.futures.as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    remote_results[url] = future.result()
+                except Exception as e:
+                    print(f"并发拉取远程订阅异常:{url} 错误信息:{str(e)}")
+                    remote_results[url] = []
+
+    # Reconstruct in original order
+    raw_nodes = []
+    for kind, val in parsed_items:
+        if kind == 'node':
+            raw_nodes.append(val)
+        elif kind == 'remote':
+            raw_nodes.extend(remote_results.get(val, []))
     return raw_nodes
 
 
@@ -137,11 +167,19 @@ def clash_encode(subs: Any) -> str:
     proxy_groups = data.get('proxy-groups') or []
 
     for proxy_group in proxy_groups:
-        group_proxies = proxy_group.get('proxies', [])
+        group_proxies = proxy_group.get('proxies')
+        if group_proxies is None or not isinstance(group_proxies, list):
+            group_proxies = []
+            proxy_group['proxies'] = group_proxies
         if 'auto' in group_proxies:
             group_proxies.remove('auto')
-            for name in proxy_name_list:
-                group_proxies.append(name)
+            if proxy_name_list:
+                for name in proxy_name_list:
+                    group_proxies.append(name)
+            else:
+                group_proxies.append('DIRECT')
+        elif not group_proxies:
+            group_proxies.append('DIRECT')
 
     return yaml.dump(data, sort_keys=False, allow_unicode=True)
 
@@ -242,19 +280,55 @@ def _inject_surge_proxies(template_content: str, proxy_lines: List[str]) -> str:
     return inject_surge_proxies(template_content, proxy_lines)
 
 
+def replace_surge_group_auto(config_text: str, autos: str) -> str:
+    """
+    Replace 'auto' placeholder within [Proxy Group] section only,
+    ensuring node names, passwords, and other sections containing 'auto' are preserved.
+    """
+    pattern = re.compile(r'(^\[Proxy Group\]\s*\n)(.*?)((?=^\[|\Z))', re.MULTILINE | re.DOTALL)
+    match = pattern.search(config_text)
+    if not match:
+        return config_text
+    header = match.group(1)
+    body = match.group(2)
+    tail = match.group(3)
+
+    new_lines = []
+    for line in body.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#') or '=' not in line:
+            new_lines.append(line)
+            continue
+        group_name, sep, group_params = line.partition('=')
+        new_params = re.sub(r'(?<=[\s,=])auto(?=[\s,]|$)', lambda _: autos, group_params)
+        new_lines.append(f"{group_name}{sep}{new_params}")
+
+    new_body = ''.join(new_lines)
+    return config_text[:match.start()] + header + new_body + tail + config_text[match.end():]
+
+
 def surge_encode(subs: Any) -> str:
     """Generate Surge subscription configuration."""
     proxy_lines = []
     proxy_name_list = []
+    used_names: Set[str] = set()
+    counts: Dict[str, int] = {}
 
     raw_nodes = expand_node_list(subs)
-    for raw_node in raw_nodes:
+    for index, raw_node in enumerate(raw_nodes, 1):
         try:
             result = _parse_surge_node(raw_node)
             if result:
                 line, name = result
+                unique_name = get_unique_proxy_name(name, used_names, index, counts)
+                if unique_name != name:
+                    prefix = f"{name} ="
+                    if line.startswith(prefix):
+                        line = f"{unique_name} ={line[len(prefix):]}"
+                    else:
+                        line = line.replace(f"{name} =", f"{unique_name} =", 1)
                 proxy_lines.append(line)
-                proxy_name_list.append(name)
+                proxy_name_list.append(unique_name)
         except Exception as e:
             print(f'surge节点解析失败:{raw_node} 错误信息:{str(e)}')
 
@@ -264,7 +338,7 @@ def surge_encode(subs: Any) -> str:
 
     config_text = _inject_surge_proxies(surge_template, proxy_lines)
     autos = ','.join(proxy_name_list) or 'DIRECT'
-    return re.sub('auto', autos, config_text)
+    return replace_surge_group_auto(config_text, autos)
 
 
 def v2ray_encode(subs: Any) -> str:

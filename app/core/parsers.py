@@ -259,9 +259,9 @@ def parse_ssr(proxy_test: str) -> Dict[str, Any]:
     query2 = urllib.parse.parse_qs(parse2.query)
     name = ''
     if query.get('remarks'):
-        name = decode_base64_if(query.get('remarks')[0])
+        name = decode_base64_if(query.get('remarks')[0].replace(' ', '+'))
     if query2.get('remarks'):
-        name = decode_base64_if(query2.get('remarks')[0])
+        name = decode_base64_if(query2.get('remarks')[0].replace(' ', '+'))
     cfg = get_runtime_config()
     if cfg.get('emoji'):
         name = (_get_country_emoji(server) or '') + (name or '')
@@ -345,7 +345,12 @@ def parse_hysteria(proxy_test: str) -> Dict[str, Any]:
     name = urllib.parse.unquote(parse.fragment)
     raw_query = urllib.parse.parse_qs(parse.query)
     query = {k: v[0] for k, v in raw_query.items()}
-    server, port = parse_server_port(urlpath, default_port=443)
+    if '@' in urlpath:
+        auth_str, _, server_port = urlpath.rpartition('@')
+    else:
+        auth_str = ''
+        server_port = urlpath
+    server, port = parse_server_port(server_port, default_port=443)
     cfg = get_runtime_config()
     if cfg.get('emoji'):
         name = (_get_country_emoji(server) or '') + (name or '')
@@ -359,6 +364,8 @@ def parse_hysteria(proxy_test: str) -> Dict[str, Any]:
         'udp': cfg.get('udp', config_manager.Udp),
         'skip-cert-verify': cfg.get('skipcert', config_manager.SkipCert)
     }
+    if auth_str:
+        proxy['auth_str'] = auth_str
     if query.get('auth'):
         proxy['auth_str'] = query.get('auth')
     if query.get('upmbps'):

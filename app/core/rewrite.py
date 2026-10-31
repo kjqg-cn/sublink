@@ -13,6 +13,7 @@ from app.core.utils import (
     encode_base64,
     get_host_port,
     get_proxy_type,
+    if_ipv6_address,
     parse_server_port,
     rewritable_node_types,
 )
@@ -137,10 +138,22 @@ def rewrite_ssr_name(node: str, parse: urllib.parse.ParseResult, transformer: An
     transform_fn = transformer or rewrite_node_name_text
     info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
     decoded_info = decode_base64_if(info)
-    parts = decoded_info.split(':', 5)
-    if len(parts) < 6:
-        return node
-    parse2 = urllib.parse.urlparse(parts[5])
+    is_ipv6 = decoded_info.startswith('[') and ']:' in decoded_info
+    if is_ipv6:
+        server_bracket, _, rest = decoded_info.partition(']:')
+        prefix = server_bracket + ']:'
+        parts = rest.split(':', 4)
+        if len(parts) < 5:
+            return node
+        target_idx = 4
+    else:
+        prefix = ''
+        parts = decoded_info.split(':', 5)
+        if len(parts) < 6:
+            return node
+        target_idx = 5
+
+    parse2 = urllib.parse.urlparse(parts[target_idx])
     pairs = urllib.parse.parse_qsl(parse2.query, keep_blank_values=True)
     new_pairs = []
     changed = False
@@ -154,10 +167,11 @@ def rewrite_ssr_name(node: str, parse: urllib.parse.ParseResult, transformer: An
         new_pairs.append((key, value))
     if not changed:
         return node
-    parts[5] = urllib.parse.urlunparse(
+    parts[target_idx] = urllib.parse.urlunparse(
         (parse2.scheme, parse2.netloc, parse2.path, parse2.params, urllib.parse.urlencode(new_pairs), parse2.fragment)
     )
-    return f"{parse.scheme}://{encode_base64(':'.join(parts), urlsafe=True)}"
+    new_decoded_info = prefix + ':'.join(parts)
+    return f"{parse.scheme}://{encode_base64(new_decoded_info, urlsafe=True)}"
 
 
 def is_ipv6_node_server(server: str) -> bool:
@@ -199,6 +213,9 @@ def get_node_server(node: str) -> str:
         if proxy_type == 'ssr':
             info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
             decoded_info = decode_base64_if(info)
+            if decoded_info.startswith('[') and ']:' in decoded_info:
+                server_part, _, _ = decoded_info[1:].partition(']:')
+                return if_ipv6_address(server_part)
             parts = decoded_info.split(':', 5)
             return parts[0] if parts else ''
         info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
