@@ -143,7 +143,6 @@ function logout() {
               </n-icon>
             </template>
           </n-button>
-          <n-button size="small" quaternary tag="a" href="/">返回旧版</n-button>
           <n-tag :bordered="false" round type="info">{{ username || '未登录' }}</n-tag>
           <n-button size="small" secondary @click="logout">退出</n-button>
         </div>

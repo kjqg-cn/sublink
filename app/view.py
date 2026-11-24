@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from flask import (
     Blueprint, current_app, g, has_app_context, has_request_context,
-    jsonify, make_response, render_template, request, send_file,
+    jsonify, make_response, redirect, request, send_file,
 )
 from flask_jwt_extended import create_access_token, create_refresh_token, get_jwt_identity, jwt_required
 import requests
@@ -26,36 +26,29 @@ import yaml
 from app import config_manager
 from app.config_manager import (
     APP_DIR, CustomFeature, CustomLoopback, CustomNodeName, Emoji, SkipCert, Udp,
-    cleanup_runtime_config, get_runtime_config, load_config, path, setup_runtime_config, sync_config_globals,
+    cleanup_runtime_config, get_runtime_config, load_config, path, setup_runtime_config,
 )
 from app.core.generator import (
-    clash_encode, clear_template_cache, convert_singbox_to_legacy_options, expand_node_list,
-    get_singbox_bandwidth, get_singbox_outbound, get_singbox_tls, get_singbox_transport,
-    get_unique_proxy_name, get_unique_singbox_tag, inject_surge_proxies, load_singbox_template,
-    migrate_singbox_legacy_options, parse_clash_node, parse_singbox_node, parse_surge_node,
-    singbox_encode, singbox_node_types, surge_encode, v2ray_encode, validate_singbox_template,
+    clash_encode, clear_template_cache, get_singbox_outbound, inject_surge_proxies,
+    load_singbox_template, parse_clash_node, parse_singbox_node, parse_surge_node,
+    singbox_encode, surge_encode, v2ray_encode, validate_singbox_template,
 )
-from app.core.parsers import (
-    NodeParse, parse_hysteria, parse_hysteria2, parse_ss, parse_ssr, parse_trojan, parse_vless, parse_vmess,
-)
+from app.core.parsers import NodeParse
 from app.core.rewrite import (
-    get_node_server, hk_name_prefix, is_ipv6_node_server, node_name_rewrite_rules, rewritable_node_types,
-    rewrite_fragment_name, rewrite_info_host_port, rewrite_loopback_node, rewrite_node_name,
-    rewrite_node_name_ipv6_text, rewrite_node_name_text, rewrite_node_url, rewrite_query_name, rewrite_remote_node,
-    rewrite_ssr_name, rewrite_vmess_name,
+    hk_name_prefix, is_ipv6_node_server, node_name_rewrite_rules,
+    rewrite_loopback_node, rewrite_node_name, rewrite_node_name_ipv6_text, rewrite_remote_node,
 )
 from app.core.utils import (
-    SUBSCRIPTION_DOWNLOAD_NAME, TOKEN_ALPHABET, check_yaml_safe_aliases, decode_base64_if,
-    decode_base64_if_emoji, encode_base64, get_host_port, get_proxy_type, get_remote_sub_host,
-    if_ipv6_address, is_truthy, is_valid_node_uri, new_access_token, parse_server_port,
-    redact_uri_credentials, remote_sub_types, split_node_and_remarks, subname_list,
+    SUBSCRIPTION_DOWNLOAD_NAME, check_yaml_safe_aliases, decode_base64_if, decode_base64_if_emoji,
+    encode_base64, is_truthy, is_valid_node_uri, new_access_token, parse_server_port,
+    redact_uri_credentials, split_node_and_remarks,
 )
 from app.exts import _is_file_backed_sqlite_uri, db
 from app.model import (
     Config, Login, Sub, User, _init_file_lock, hash_password, verify_dummy_password, verify_password,
 )
 from app.remote import (
-    ResponseTooLargeError, SSRFError, clear_remote_sub_cache, fetch_remote_sub,
+    ResponseTooLargeError, SSRFError, fetch_remote_sub,
     get_client_ip, get_country_emoji, request_timeout, safe_fetch_url, save_ip_address,
 )
 
@@ -320,32 +313,6 @@ def get_next_sub_sort_order() -> int:
     return (max_order if max_order is not None else -1) + 1
 
 
-def get_sub_sort_order(name: str) -> int:
-    sub = Sub.query.filter_by(name=name).order_by(Sub.sort_order.asc(), Sub.id.asc()).first()
-    return sub.sort_order if sub else get_next_sub_sort_order()
-
-
-def get_access_token(name: str) -> Optional[str]:
-    sub = Sub.query.filter_by(name=name).first()
-    return sub.access_token if sub else None
-
-
-def ensure_access_token(name: str) -> Optional[str]:
-    with _sub_write_lock():
-        subs = Sub.query.filter_by(name=name).all()
-        if not subs:
-            return None
-        token = next((sub.access_token for sub in subs if sub.access_token), None) or new_access_token()
-        changed = False
-        for sub in subs:
-            if sub.access_token != token:
-                sub.access_token = token
-                changed = True
-        if changed:
-            db.session.commit()
-        return token
-
-
 # ---------------------------------------------------------------------------
 # Request Lifecycle Hooks
 # ---------------------------------------------------------------------------
@@ -436,15 +403,15 @@ def singbox_config():
 
 @blue.route('/')
 def get_index():
-    return render_template('index.html')
+    index_path = os.path.join(path, 'static', 'dist', 'index.html')
+    if not os.path.exists(index_path):
+        return '前端尚未构建，请先在 web 目录执行 npm ci && npm run build，或使用 Docker 构建部署', 503
+    return send_file(index_path)
 
 
 @blue.route('/next')
 def get_index_next():
-    index_path = os.path.join(path, 'static', 'next', 'index.html')
-    if not os.path.exists(index_path):
-        return '新版前端尚未构建，请先在 web/next 执行 npm run build', 404
-    return send_file(index_path)
+    return redirect('/', code=302)
 
 
 # ---------------------------------------------------------------------------

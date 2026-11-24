@@ -1,19 +1,16 @@
 # =========================
-# Stage 1: Build Frontends
+# Stage 1: Build Frontend
 # =========================
 FROM node:20-alpine AS frontend-builder
 WORKDIR /build
 
 # Install dependencies deterministically for optimal layer caching
-COPY web/package.json web/yarn.lock ./web/
-COPY web/next/package.json web/next/package-lock.json ./web/next/
-RUN cd /build/web && yarn install --frozen-lockfile --ignore-engines --registry=https://registry.npmmirror.com && \
-    cd /build/web/next && npm ci --registry=https://registry.npmmirror.com
+COPY web/package.json web/package-lock.json ./web/
+RUN cd /build/web && npm ci --registry=https://registry.npmmirror.com
 
-# Copy frontend source once and build both frontends
+# Copy frontend source and build static bundle to /build/app/static/dist
 COPY web ./web
-RUN cd /build/web && yarn build && \
-    cd /build/web/next && npm run build
+RUN cd /build/web && npm run build
 
 # =========================
 # Stage 2: Runtime Image
@@ -39,8 +36,7 @@ COPY upgrade_db.py .
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Copy compiled frontend assets from builder stage
-COPY --from=frontend-builder /build/app/static app/static
-COPY --from=frontend-builder /build/app/templates app/templates
+COPY --from=frontend-builder /build/app/static/dist app/static/dist
 
 # Create non-root runtime user (UID/GID 1000) and normalize entrypoint line endings.
 # Entrypoint adjusts /app/app/db ownership on bind-mounts when started as root, then drops to sublink via gosu.

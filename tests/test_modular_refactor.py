@@ -5,49 +5,16 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app import config_manager, view
-from app.config_manager import (
-    APP_DIR,
-    CustomFeature,
-    CustomLoopback,
-    CustomNodeName,
-    Emoji,
-    SkipCert,
-    Udp,
-    get_runtime_config,
-    load_config,
-    sync_config_globals,
-)
-from app.core import generator, parsers, rewrite, utils
+from app.core import utils
 from app.core.generator import (
-    clash_encode,
-    expand_node_list,
     inject_surge_proxies,
     parse_clash_node,
     parse_surge_node,
-    singbox_encode,
-    surge_encode,
     v2ray_encode,
 )
-from app.core.parsers import (
-    NodeParse,
-    parse_hysteria,
-    parse_hysteria2,
-    parse_ss,
-    parse_ssr,
-    parse_trojan,
-    parse_vless,
-    parse_vmess,
-)
-from app.core.rewrite import (
-    node_name_rewrite_rules,
-    rewrite_loopback_node,
-    rewrite_node_name,
-    rewrite_remote_node,
-)
+from app.core.parsers import NodeParse, parse_vless
+from app.core.rewrite import node_name_rewrite_rules
 from app.core.utils import (
-    decode_base64_if,
-    decode_base64_if_emoji,
-    encode_base64,
     get_host_port,
     get_proxy_type,
     if_ipv6_address,

@@ -1,6 +1,5 @@
 """Tests verifying the latest review fixes (Surge auto, Clash empty fallback, etc.)."""
 
-import json
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -13,7 +12,7 @@ from app.core.generator import clash_encode, replace_surge_group_auto, surge_enc
 from app.core.parsers import parse_hysteria, parse_ssr
 from app.exts import db, jwtmanager
 from app.model import Sub, User
-from app.remote import is_private_or_loopback_ip, save_ip_address
+from app.remote import is_private_or_loopback_ip
 
 
 class Review2FixesTest(unittest.TestCase):
@@ -384,14 +383,11 @@ class Review2FixesTest(unittest.TestCase):
 
     # 22. 远程订阅内存缓存与异常兜底 (Stale-While-Revalidate)
     def test_remote_sub_cache_and_stale_fallback(self):
-        import time
         import requests
         import app.remote
         from app.remote import (
-            _remote_sub_cache,
             clear_remote_sub_cache,
             fetch_remote_sub,
-            _ORIGINAL_REQUESTS_GET
         )
 
         clear_remote_sub_cache()
@@ -431,4 +427,3 @@ class Review2FixesTest(unittest.TestCase):
         self.assertFalse(is_raw_ip('my.domain.cn'))
         self.assertFalse(is_raw_ip(''))
         self.assertFalse(is_raw_ip(None))
-

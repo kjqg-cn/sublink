@@ -170,41 +170,49 @@ def _copy_template_atomic(src_path: str, dst_path: str) -> None:
 
 
 # flask db init  初始化
-# flask db migrate   数据迁移
-# flask db upgrade   改进更新
-class User(db.Model):#用户
+# flask db migrate  数据迁移
+# flask db upgrade  改进更新
+class User(db.Model):  # 用户
     __tablename__ = 'user'
     id = db.Column(db.Integer, primary_key=True, comment="主键ID")
     username = db.Column(db.String(40), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
     name = db.Column(db.String(40), unique=False)
     token_version = db.Column(db.Integer, nullable=False, default=1)
-class Sub(db.Model):#订阅管理
+
+
+class Sub(db.Model):  # 订阅管理
     __tablename__ = 'sub'
     id = db.Column(db.Integer, primary_key=True, comment="主键ID")
-    name = db.Column(db.String(40), unique=False) #订阅名称
-    node = db.Column(db.Text, unique=False) #节点
-    remarks = db.Column(db.String(40), unique=False) #备注
-    sort_order = db.Column(db.Integer, nullable=False, default=0) #订阅排序
-    access_token = db.Column(db.String(48), nullable=True, index=True) #订阅访问Token
-    legacy_enabled = db.Column(db.Boolean, nullable=False, default=False) #兼容旧地址
-class Login(db.Model):#登录记录
+    name = db.Column(db.String(40), unique=False)  # 订阅名称
+    node = db.Column(db.Text, unique=False)  # 节点
+    remarks = db.Column(db.String(40), unique=False)  # 备注
+    sort_order = db.Column(db.Integer, nullable=False, default=0)  # 订阅排序
+    access_token = db.Column(db.String(48), nullable=True, index=True)  # 订阅访问 Token
+    legacy_enabled = db.Column(db.Boolean, nullable=False, default=False)  # 兼容旧地址
+
+
+class Login(db.Model):  # 登录记录
     __tablename__ = 'login'
     id = db.Column(db.Integer, primary_key=True, comment="主键ID")
-    ip = db.Column(db.String(64), unique=False) #ip
-    address = db.Column(db.Text, unique=False) #地址
-    time = db.Column(db.Text, unique=False) #时间
-class Config(db.Model):#全局配置
+    ip = db.Column(db.String(64), unique=False)  # IP
+    address = db.Column(db.Text, unique=False)  # 地址
+    time = db.Column(db.Text, unique=False)  # 时间
+
+
+class Config(db.Model):  # 全局配置
     __tablename__ = 'config'
     id = db.Column(db.Integer, primary_key=True, comment="主键ID")
     key = db.Column(db.String(64), unique=True, nullable=False)
     value = db.Column(db.Text, unique=False)
+
+
 def create_db():
     app_dir = os.path.dirname(os.path.abspath(__file__))
     db_dir = ensure_db_dir(app_dir)
     with _init_file_lock(db_dir):
-        db.create_all() # 创建所有表
-        if User.query.count() == 0: # 如果用户表为空
+        db.create_all()  # 创建所有表
+        if User.query.count() == 0:  # 如果用户表为空
             print('初始化用户表')
             init_username = (os.environ.get('INIT_ADMIN_USERNAME') or 'admin').strip() or 'admin'
             env_password = (os.environ.get('INIT_ADMIN_PASSWORD') or '').strip()
@@ -243,6 +251,8 @@ def create_db():
         load_config()
     except Exception:
         pass
+
+
 def init_user_pass():
     def handle_error(e):
         db.session.rollback()
@@ -270,6 +280,8 @@ def init_user_pass():
                 print(f'[Sublink] 重置后的随机密码: {raw_password}')
         except Exception as e:
             handle_error(e)
+
+
 def init_login_log():
     def handle_error(e):
         db.session.rollback()

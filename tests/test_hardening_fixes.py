@@ -1,16 +1,15 @@
 import base64
-import json
 import os
 import unittest
 import urllib.parse
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from flask import Flask, g
 from flask_jwt_extended import create_access_token
 
 from app import view
 from app.exts import db, jwtmanager
-from app.model import Config, Login, Sub, User
+from app.model import Config, Login, User
 
 
 class HardeningFixesTest(unittest.TestCase):
@@ -454,5 +453,3 @@ class HardeningFixesTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
-

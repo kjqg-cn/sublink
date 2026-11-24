@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from flask import Flask
-from flask_jwt_extended import create_access_token, create_refresh_token
+from flask_jwt_extended import create_access_token
 from flask_migrate import upgrade as alembic_upgrade
 import requests
 import sqlalchemy as sa
@@ -27,7 +27,6 @@ import app.core.rewrite as rewrite
 import app.remote as remote
 from app.core.parsers import (
     parse_hysteria,
-    parse_hysteria2,
     parse_ss,
     parse_ssr,
     parse_trojan,
@@ -35,12 +34,11 @@ from app.core.parsers import (
     parse_vmess,
 )
 from app.core.utils import decode_base64_if, is_valid_node_uri
-from app.exts import db, init_exts, jwtmanager
+from app.exts import db, init_exts
 from app.model import Config, Login, Sub, User, create_db, hash_password, is_password_hashed, verify_password
 from upgrade_db import (
     CONFIG_SCHEMA_REVISION,
     MIGRATIONS_DIR,
-    USER_AUTH_REVISION,
     detect_schema_revision,
     read_schema_state,
     upgrade_database,
@@ -1024,7 +1022,7 @@ class P2AndP3FixesTest(unittest.TestCase):
                     # Full downgrade -> base -> upgrade -> head roundtrip
                     alembic_downgrade(directory=MIGRATIONS_DIR, revision='base')
                     alembic_upgrade(directory=MIGRATIONS_DIR, revision='head')
-                    tables, schema_items, rev = read_schema_state(db_file)
+                    tables, _, rev = read_schema_state(db_file)
                     self.assertEqual(rev, CONFIG_SCHEMA_REVISION)
                     self.assertTrue({'user', 'sub', 'login', 'config'}.issubset(tables))
                     db.session.remove()
@@ -1451,8 +1449,11 @@ class Round3GlobalAudit24ItemsTest(unittest.TestCase):
         with open(os.path.join(REPO_ROOT, 'Dockerfile'), 'r', encoding='utf-8') as f:
             df = f.read()
         self.assertIn('gosu', df)
-        self.assertIn('yarn install --frozen-lockfile', df)
         self.assertIn('npm ci', df)
+        self.assertIn('npm run build', df)
+        self.assertIn('app/static/dist', df)
+        self.assertNotIn('yarn', df)
+        self.assertNotIn('app/templates', df)
         self.assertIn('ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]', df)
 
         with open(os.path.join(REPO_ROOT, 'docker-compose.yml'), 'r', encoding='utf-8') as f:
@@ -2007,10 +2008,39 @@ class Round3GlobalAudit24ItemsTest(unittest.TestCase):
         self.assertNotIn('sing-box 1.11', readme)
         self.assertIn('1.12 - 1.13', generator.convert_singbox_to_legacy_options.__doc__ or '')
 
-        # 3. Legacy web/package.json preserves --no-clean to protect app/static/next/
+        # 3. Unified Vue 3 frontend in web/ builds to app/static/dist, Flask serves / and redirects /next -> /
         with open(os.path.join(REPO_ROOT, 'web', 'package.json'), 'r', encoding='utf-8') as f:
             web_pkg = json.load(f)
-        self.assertIn('--no-clean', web_pkg['scripts']['build'])
+        self.assertIn('vite build', web_pkg['scripts']['build'])
+        self.assertIn('vue-tsc --noEmit', web_pkg['scripts']['build'])
+        self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, 'web', 'next')))
+
+        with open(os.path.join(REPO_ROOT, 'web', 'vite.config.ts'), 'r', encoding='utf-8') as f:
+            vite_cfg = f.read()
+        self.assertIn("base: '/static/dist/'", vite_cfg)
+        self.assertIn('../app/static/dist', vite_cfg)
+
+        app_ui = _make_test_app()
+        with app_ui.app_context():
+            client_ui = app_ui.test_client()
+            res_next = client_ui.get('/next')
+            self.assertEqual(res_next.status_code, 302)
+            self.assertTrue(res_next.headers['Location'].endswith('/'))
+
+            with tempfile.TemporaryDirectory() as tmp_app_dir:
+                with patch.object(view, 'path', tmp_app_dir):
+                    res_missing = client_ui.get('/')
+                    self.assertEqual(res_missing.status_code, 503)
+                    self.assertIn('npm run build', res_missing.get_data(as_text=True))
+
+                    dist_dir = os.path.join(tmp_app_dir, 'static', 'dist')
+                    os.makedirs(dist_dir, exist_ok=True)
+                    with open(os.path.join(dist_dir, 'index.html'), 'w', encoding='utf-8') as f:
+                        f.write('<!DOCTYPE html><html><body>sublink-vue3</body></html>')
+
+                    with client_ui.get('/') as res_ok:
+                        self.assertEqual(res_ok.status_code, 200)
+                        self.assertIn('sublink-vue3', res_ok.get_data(as_text=True))
 
 
 if __name__ == '__main__':

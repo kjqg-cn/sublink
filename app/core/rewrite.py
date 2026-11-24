@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import urllib.parse
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from app.config_manager import get_runtime_config
 from app.core.utils import (

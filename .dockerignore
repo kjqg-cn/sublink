@@ -1,11 +1,14 @@
 app/db
+app/static/dist
+app/templates
 box.sh
 build.sh
 .git
+.venv
 __pycache__
 *.py[cod]
 .pytest_cache
+*.db
+*.log
 web/node_modules
 web/dist
-web/next/node_modules
-web/next/dist

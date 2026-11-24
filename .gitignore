@@ -69,15 +69,10 @@ pnpm-debug.log*
 node_modules/
 web/dist/
 web/node_modules/
-web/next/dist/
-web/next/node_modules/
 .eslintcache
 .stylelintcache
-app/static/next/
-app/static/js/
-app/static/css/
-app/static/fonts/
-app/templates/index.html
+app/static/dist/
+app/templates/
 !app/static/favicon.ico
 
 # IDE & Editors
@@ -106,6 +101,3 @@ build.sh
 adoc
 demo_pic
 sublink-docker-src-v3.tar.gz
-
-# Exceptions
-!web/.env
