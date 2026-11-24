@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import { NModal } from 'naive-ui'
 import QRCode from 'qrcode'
 
@@ -8,16 +8,18 @@ const emit = defineEmits<{ 'update:show': [value: boolean] }>()
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 
-// 弹窗打开且拿到 canvas 后再渲染二维码。
+// 监听弹窗状态、文本以及 canvas 引用挂载，确保首次打开即可稳定渲染二维码。
 watch(
-  () => [props.show, props.text] as const,
-  async ([show, text]) => {
+  [() => props.show, () => props.text, canvas],
+  async ([show, text, canvasEl]) => {
     if (!show || !text) return
-    await Promise.resolve()
-    if (canvas.value) {
-      QRCode.toCanvas(canvas.value, text, { width: 240, margin: 1 }).catch(() => {})
+    await nextTick()
+    const target = canvasEl ?? canvas.value
+    if (target) {
+      QRCode.toCanvas(target, text, { width: 240, margin: 1 }).catch(() => {})
     }
-  }
+  },
+  { immediate: true, flush: 'post' }
 )
 </script>
 

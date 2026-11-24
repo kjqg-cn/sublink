@@ -8,17 +8,27 @@
   </div>
   <div style="margin-bottom: 10px"></div>
   <el-input
+    type="password"
+    show-password
+    v-model="oldPassword"
+    placeholder="请输入当前密码"
+  >
+    <template slot="prepend">当前密码</template>
+  </el-input>
+  <div style="margin-bottom: 10px"></div>
+  <el-input
     type="text"
     v-model="newUserName"
-    placeholder="新账号"
+    placeholder="新账号（3-32 位字母、数字或 _ . -）"
   >
     <template slot="prepend">新账号</template>
   </el-input>
   <div style="margin-bottom: 10px"></div>
   <el-input
-    type="text"
+    type="password"
+    show-password
     v-model="password"
-    placeholder="新密码"
+    placeholder="新密码（4-64 位）"
     @keydown.enter.native="handleSetUser"
   >
     <template slot="prepend">新密码</template>
@@ -31,59 +41,77 @@
 
 <script>
 import { SetUser } from '@/api/user'
+import { decodeJwtPayload, readStoredToken } from '@/utils/request'
 export default {
   name: 'MyUser',
   data () {
     return {
       username: '',
+      oldPassword: '',
       newUserName: '',
       password: '',
-      timer: ''
+      timer: null
     }
   },
   created () {
     this.handleUser()
   },
+  beforeDestroy () {
+    clearTimeout(this.timer)
+  },
   methods: {
     handleUser () {
-      const token = JSON.parse(localStorage.getItem('token'))
+      const token = readStoredToken('token')
       if (token) {
-        const payload = token.split('.')[1]
-        const decoded = JSON.parse(atob(payload))
-        this.username = decoded.sub
+        const decoded = decodeJwtPayload(token)
+        this.username = (decoded && decoded.sub) || ''
+        if (!this.newUserName) {
+          this.newUserName = this.username
+        }
       }
     },
     handleSetUser () {
-      if (!/^\w{4,16}$/.test(this.newUserName)) {
+      if (!this.oldPassword) {
         this.$message({
           type: 'warning',
-          message: '请输入4-16位数字母或者数字账号'
+          message: '请输入当前密码'
         })
         return false
       }
-      if (!/^[\x20-\x7E]{4,32}$/.test(this.password)) {
+      if (!/^[A-Za-z0-9_.-]{3,32}$/.test(this.newUserName)) {
         this.$message({
           type: 'warning',
-          message: '请输入4-32位密码，可以包含大小写字母、数字和符号'
+          message: '请输入 3-32 位字母、数字、下划线、点或连字符账号'
+        })
+        return false
+      }
+      if (!/^[\x20-\x7E]{4,64}$/.test(this.password)) {
+        this.$message({
+          type: 'warning',
+          message: '请输入 4-64 位密码，可以包含大小写字母、数字和符号'
         })
         return false
       }
       clearTimeout(this.timer)
       this.timer = setTimeout(async () => {
-        const { MD5 } = require('crypto-js')
-        const { code, msg } = await SetUser({
-          username: this.username,
-          newUserName: this.newUserName,
-          password: MD5(this.password).toString()
-        })
-        this.$message({
-          type: code === 200 ? 'success' : 'warning',
-          message: msg
-        })
-        if (code === 200) {
-          this.handleOutUser()
+        try {
+          const { code, msg } = await SetUser({
+            username: this.username,
+            oldPassword: this.oldPassword,
+            newUserName: this.newUserName,
+            password: this.password
+          })
+          this.$message({
+            type: code === 200 ? 'success' : 'warning',
+            message: msg
+          })
+          if (code === 200) {
+            this.handleOutUser()
+          }
+        } catch (error) {
+          this.$message.error('修改失败')
         }
-      }, 1000)
+      }, 300)
     },
     handleOutUser () { // 注销用户
       localStorage.removeItem('token')

@@ -59,9 +59,13 @@ export default {
   },
   methods: {
     async get_ip_address () {
-      const res = await GetAddress()
-      this.tableDataAll = res
-      this.handleGetList()
+      try {
+        const res = await GetAddress()
+        this.tableDataAll = Array.isArray(res) ? res : []
+        this.handleGetList()
+      } catch (error) {
+        this.$message.error('加载登录记录失败')
+      }
     },
     handleGetList () { // 解析数据
       this.tableData = this.tableDataAll.slice(

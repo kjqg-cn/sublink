@@ -23,6 +23,8 @@
     >
     <el-input
       v-model.trim="rename"
+      maxlength="40"
+      show-word-limit
       ref="inp"
       @keyup.enter.native="handleRename"
     />

@@ -2,6 +2,8 @@
 
 import ipaddress
 import json
+import logging
+import os
 import re
 import sys
 import urllib.parse
@@ -15,10 +17,14 @@ from app.core.utils import (
     get_proxy_type,
     if_ipv6_address,
     parse_server_port,
+    redact_uri_credentials,
     rewritable_node_types,
 )
 
+logger = logging.getLogger(__name__)
+
 hk_name_prefix = '🇭🇰【香港'
+_DEFAULT_HK_PREFIX = hk_name_prefix
 
 # Note: '-' prefixes must be fully preserved as requested
 node_name_rewrite_rules = [
@@ -29,24 +35,64 @@ node_name_rewrite_rules = [
     (('-LON', '-UK'), '🇬🇧【伦敦'),
     (('-DE',), '🇩🇪【莱比锡'),
 ]
+_DEFAULT_REWRITE_RULES = node_name_rewrite_rules
+
+
+def _get_loopback_port() -> str:
+    raw = (os.environ.get('CUSTOM_LOOPBACK_PORT') or '').strip()
+    if raw.isdigit() and 1 <= int(raw) <= 65535:
+        return str(int(raw))
+    return '443'
 
 
 def _get_rewrite_rules() -> Any:
     view_mod = sys.modules.get('app.view')
     if view_mod and hasattr(view_mod, 'node_name_rewrite_rules'):
-        return view_mod.node_name_rewrite_rules
+        view_rules = view_mod.node_name_rewrite_rules
+        if view_rules is not _DEFAULT_REWRITE_RULES:
+            return view_rules
+    if node_name_rewrite_rules is not _DEFAULT_REWRITE_RULES:
+        return node_name_rewrite_rules
+    env_rules = (os.environ.get('CUSTOM_NAME_REWRITE_RULES') or '').strip()
+    if env_rules:
+        try:
+            loaded = json.loads(env_rules)
+            if isinstance(loaded, list):
+                parsed = []
+                for item in loaded:
+                    if (
+                        isinstance(item, (list, tuple))
+                        and len(item) == 2
+                        and isinstance(item[0], (list, tuple))
+                        and isinstance(item[1], str)
+                    ):
+                        kws = tuple(str(k) for k in item[0] if str(k))
+                        if kws:
+                            parsed.append((kws, item[1]))
+                if parsed:
+                    return parsed
+        except Exception as exc:
+            logger.warning('CUSTOM_NAME_REWRITE_RULES 解析失败，已回退默认规则: %s', exc)
     return node_name_rewrite_rules
 
 
 def _get_hk_prefix() -> str:
     view_mod = sys.modules.get('app.view')
     if view_mod and hasattr(view_mod, 'hk_name_prefix'):
-        return view_mod.hk_name_prefix
+        view_prefix = view_mod.hk_name_prefix
+        if view_prefix != _DEFAULT_HK_PREFIX:
+            return view_prefix
+    if hk_name_prefix != _DEFAULT_HK_PREFIX:
+        return hk_name_prefix
+    env_prefix = os.environ.get('CUSTOM_HK_PREFIX')
+    if env_prefix:
+        return env_prefix
     return hk_name_prefix
 
 
-def rewrite_info_host_port(info: str, host: str, port: str = '443') -> Tuple[str, bool]:
+def rewrite_info_host_port(info: str, host: str, port: Optional[str] = None) -> Tuple[str, bool]:
     """Rewrite 127.0.0.1 host and port in userinfo@host:port format."""
+    target_port = port if port is not None else _get_loopback_port()
     prefix = ''
     host_port = info
     if '@' in info:
@@ -57,13 +103,14 @@ def rewrite_info_host_port(info: str, host: str, port: str = '443') -> Tuple[str
     old_host, _, _ = host_port.rpartition(':')
     if old_host.strip('[]') != '127.0.0.1':
         return info, False
-    return prefix + get_host_port(host, port), True
+    return prefix + get_host_port(host, target_port), True
 
 
 def rewrite_node_url(node: str, info: str) -> str:
     """Reconstruct node URL with new netloc info."""
     parse = urllib.parse.urlparse(node)
-    return urllib.parse.urlunparse((parse.scheme, info, '', '', parse.query, parse.fragment))
+    keep_path = parse.path if (parse.netloc and parse.path not in ('', '/')) else ''
+    return urllib.parse.urlunparse((parse.scheme, info, keep_path, '', parse.query, parse.fragment))
 
 
 def rewrite_node_name_text(name: str, host: str = '') -> str:
@@ -203,7 +250,7 @@ def get_node_server(node: str) -> str:
             pairs = urllib.parse.parse_qs(parse.query)
             if 'add' in pairs and pairs['add']:
                 return pairs['add'][0]
-            info = decode_base64_if(parse.netloc)
+            info = parse.netloc if '@' in parse.netloc else decode_base64_if(parse.netloc)
             if '@' in info:
                 _, _, server_port = info.rpartition('@')
             else:
@@ -218,12 +265,21 @@ def get_node_server(node: str) -> str:
                 return if_ipv6_address(server_part)
             parts = decoded_info.split(':', 5)
             return parts[0] if parts else ''
-        info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
-        decoded = decode_base64_if(info)
-        if '@' in decoded:
-            _, _, host_port = decoded.rpartition('@')
+        if proxy_type == 'ss':
+            info = parse.netloc or (parse.path if parse.path != '/' else '')
+            if '@' in info:
+                _, _, host_port = info.rpartition('@')
+            else:
+                decoded = decode_base64_if(info)
+                host_port = decoded.rpartition('@')[2] if '@' in decoded else decoded
+            server, _ = parse_server_port(host_port)
+            return server
+        info = parse.netloc or (parse.path if parse.path != '/' else '')
+        if '@' in info:
+            _, _, host_port = info.rpartition('@')
         else:
-            host_port = decoded
+            decoded = decode_base64_if(info)
+            host_port = decoded.rpartition('@')[2] if '@' in decoded else info
         server, _ = parse_server_port(host_port)
         return server
     except Exception:
@@ -250,27 +306,6 @@ def rewrite_node_name_ipv6_text(name: str) -> str:
     return name
 
 
-def rewrite_node_ipv6(node: str) -> str:
-    """Rewrite node name if the node connects to an IPv6 server."""
-    if not node:
-        return node
-    server = get_node_server(node)
-    if not is_ipv6_node_server(server):
-        return node
-    try:
-        proxy_type = get_proxy_type(node)
-        parse = urllib.parse.urlparse(node)
-        if proxy_type == 'vmess':
-            return rewrite_vmess_name(node, parse, transformer=rewrite_node_name_ipv6_text)
-        if proxy_type == 'ssr':
-            return rewrite_ssr_name(node, parse, transformer=rewrite_node_name_ipv6_text)
-        if proxy_type in rewritable_node_types:
-            return rewrite_fragment_name(node, parse, transformer=rewrite_node_name_ipv6_text)
-    except Exception as e:
-        print(f'IPv6节点名称重写失败:{node} 错误信息:{str(e)}')
-    return node
-
-
 def rewrite_node_name(node: str, host: str = '') -> str:
     """Rewrite node name and flag for supported protocol types, applying IPv6 indicator if host is IPv6."""
     if not node:
@@ -286,7 +321,7 @@ def rewrite_node_name(node: str, host: str = '') -> str:
         if proxy_type in rewritable_node_types:
             return rewrite_fragment_name(node, parse, transformer=transformer)
     except Exception as e:
-        print(f'节点名称重写失败:{node} 错误信息:{str(e)}')
+        logger.warning('节点名称重写失败: %s 错误信息: %s', redact_uri_credentials(node), e)
     return node
 
 
@@ -294,6 +329,7 @@ def rewrite_loopback_node(node: str, host: str) -> str:
     """Rewrite 127.0.0.1 node addresses to subscription host."""
     if not node or not host:
         return node
+    target_port = _get_loopback_port()
     try:
         proxy_type = get_proxy_type(node)
         parse = urllib.parse.urlparse(node)
@@ -303,15 +339,20 @@ def rewrite_loopback_node(node: str, host: str) -> str:
             if str(proxy.get('add')).strip('[]') != '127.0.0.1':
                 return node
             proxy['add'] = host
-            proxy['port'] = '443'
+            proxy['port'] = target_port
             return f"{parse.scheme}://{encode_base64(json.dumps(proxy, ensure_ascii=False, separators=(',', ':')))}"
         if proxy_type == 'vmess':
             info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
-            rewritten_info, changed = rewrite_info_host_port(decode_base64_if(info), host)
-            if changed:
-                return urllib.parse.urlunparse(
-                    (parse.scheme, encode_base64(rewritten_info), '', '', parse.query, parse.fragment)
-                )
+            if '@' in info:
+                rewritten_info, changed = rewrite_info_host_port(info, host, target_port)
+                if changed:
+                    return rewrite_node_url(node, rewritten_info)
+            else:
+                rewritten_info, changed = rewrite_info_host_port(decode_base64_if(info), host, target_port)
+                if changed:
+                    return urllib.parse.urlunparse(
+                        (parse.scheme, encode_base64(rewritten_info), '', '', parse.query, parse.fragment)
+                    )
         if proxy_type == 'ssr':
             info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
             decoded_info = decode_base64_if(info)
@@ -320,30 +361,39 @@ def rewrite_loopback_node(node: str, host: str) -> str:
                 return node
             ssr_host = f'[{host}]' if (':' in host and not host.startswith('[')) else host
             parts[0] = ssr_host
-            parts[1] = '443'
+            parts[1] = target_port
             return f"{parse.scheme}://{encode_base64(':'.join(parts), urlsafe=True)}"
         if proxy_type == 'ss':
-            info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
-            decoded = decode_base64_if(info)
-            if '@' not in decoded:
-                return node
-            userinfo, _, host_port = decoded.rpartition('@')
+            info = parse.netloc or (parse.path if parse.path != '/' else '')
+            if '@' in info:
+                userinfo_raw, _, host_port = info.rpartition('@')
+                userinfo_unquoted = urllib.parse.unquote(userinfo_raw)
+                userinfo = userinfo_unquoted if ':' in userinfo_unquoted else decode_base64_if(userinfo_unquoted)
+            else:
+                decoded = decode_base64_if(info)
+                if '@' not in decoded:
+                    return node
+                userinfo, _, host_port = decoded.rpartition('@')
             if ':' not in host_port:
                 return node
             old_host, _, _ = host_port.rpartition(':')
             if old_host.strip('[]') != '127.0.0.1':
                 return node
-            new_host_port = get_host_port(host, '443')
+            new_host_port = get_host_port(host, target_port)
             encoded_userinfo = encode_base64(userinfo, urlsafe=True)
             new_netloc = f"{encoded_userinfo}@{new_host_port}"
             return urllib.parse.urlunparse((parse.scheme, new_netloc, '', '', parse.query, parse.fragment))
         if proxy_type in rewritable_node_types:
-            info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
-            rewritten_info, changed = rewrite_info_host_port(decode_base64_if(info), host)
+            info = parse.netloc or (parse.path if parse.path != '/' else '')
+            if '@' not in info:
+                decoded_candidate = decode_base64_if(info)
+                if '@' in decoded_candidate:
+                    info = decoded_candidate
+            rewritten_info, changed = rewrite_info_host_port(info, host, target_port)
             if changed:
                 return rewrite_node_url(node, rewritten_info)
     except Exception as e:
-        print(f'127.0.0.1节点重写失败:{node} 错误信息:{str(e)}')
+        logger.warning('127.0.0.1节点重写失败: %s 错误信息: %s', redact_uri_credentials(node), e)
     return node
 
 

@@ -30,23 +30,30 @@ export default {
       timer: null
     }
   },
+  beforeDestroy () {
+    clearTimeout(this.timer)
+  },
   methods: {
     handleLogin () {
       clearTimeout(this.timer) // 清除定时器
       this.timer = setTimeout(async () => { // 执行定时器防抖
-        const { MD5 } = require('crypto-js')
-        const { code, msg, token, refresh } = await login({
-          username: this.username,
-          password: MD5(this.password).toString()
-        })
-        this.$message({
-          type: code === 200 ? 'success' : 'warning',
-          message: msg
-        })
-        if (code === 200) {
-          localStorage.setItem('token', JSON.stringify(token)) // 设置token
-          localStorage.setItem('refresh', JSON.stringify(refresh)) // 设置刷新令牌
-          this.$router.push('/')
+        try {
+          const { code, msg, token, refresh } = await login({
+            username: this.username,
+            password: this.password
+          })
+          this.$message({
+            type: code === 200 ? 'success' : 'warning',
+            message: msg
+          })
+          if (code === 200) {
+            localStorage.setItem('token', JSON.stringify(token)) // 设置token
+            localStorage.setItem('refresh', JSON.stringify(refresh)) // 设置刷新令牌
+            this.$router.push('/')
+          }
+        } catch (error) {
+          const serverMsg = error?.response?.data?.msg
+          this.$message.error(serverMsg || '登录请求失败')
         }
       }, 1000)
     }

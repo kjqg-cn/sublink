@@ -7,6 +7,7 @@ from flask_migrate import stamp, upgrade
 
 from app import create_app
 from app.exts import db
+from app.model import _init_file_lock, create_db, ensure_db_dir
 
 DB_PATH = Path(__file__).parent / 'app' / 'db' / 'sub.db'
 MIGRATIONS_DIR = str(Path(__file__).parent / 'migrations')
@@ -15,14 +16,19 @@ LEGACY_REVISION = '4e76f839124e'
 SORT_REVISION = '7d8f0c1a2b3c'
 TOKEN_REVISION = '8e9f0c1a2b3d'
 INDEX_REVISION = '9f0a1b2c3d4e'
+USER_AUTH_REVISION = 'a1b2c3d4e5f6'
+CONFIG_SCHEMA_REVISION = 'b2c3d4e5f6a7'
 REVISION_ORDER = {
     INITIAL_REVISION: 0,
     LEGACY_REVISION: 1,
     SORT_REVISION: 2,
     TOKEN_REVISION: 3,
     INDEX_REVISION: 4,
+    USER_AUTH_REVISION: 5,
+    CONFIG_SCHEMA_REVISION: 6,
 }
 TOKEN_ALPHABET = string.ascii_lowercase + string.digits
+SQLITE_CONNECT_TIMEOUT = 15
 
 
 def new_access_token(used_tokens=None):
@@ -33,25 +39,64 @@ def new_access_token(used_tokens=None):
             return token
 
 
+def _open_sqlite(db_path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, timeout=SQLITE_CONNECT_TIMEOUT)
+    conn.execute(f'PRAGMA busy_timeout={SQLITE_CONNECT_TIMEOUT * 1000}')
+    return conn
+
+
+def _resolve_db_path(app=None, db_path=None) -> Path:
+    if db_path is not None:
+        return Path(db_path)
+    if app is not None:
+        uri = str(app.config.get('SQLALCHEMY_DATABASE_URI') or '')
+        if uri.startswith('sqlite:///') and uri != 'sqlite:///:memory:':
+            return Path(uri[len('sqlite:///'):])
+    return DB_PATH
+
+
 def read_schema_state(db_path=DB_PATH):
     if not Path(db_path).exists():
         return set(), set(), None
 
-    connection = sqlite3.connect(db_path)
+    connection = _open_sqlite(db_path)
     try:
         tables = {
             row[0] for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        if 'sub' not in tables:
-            return tables, set(), _read_alembic_revision(connection, tables)
-
-        columns = {row[1] for row in connection.execute('PRAGMA table_info(sub)')}
-        indexes = {row[1] for row in connection.execute('PRAGMA index_list(sub)')}
-        return tables, columns | {f'index:{name}' for name in indexes}, _read_alembic_revision(
-            connection, tables
-        )
+        schema_items = set()
+        if 'sub' in tables:
+            columns = {row[1] for row in connection.execute('PRAGMA table_info(sub)')}
+            indexes = {row[1] for row in connection.execute('PRAGMA index_list(sub)')}
+            schema_items |= columns | {f'index:{name}' for name in indexes}
+        if 'user' in tables:
+            user_cols = {row[1] for row in connection.execute('PRAGMA table_info(user)')}
+            if 'token_version' in user_cols:
+                schema_items.add('user:token_version')
+            for idx_row in connection.execute('PRAGMA index_list(user)').fetchall():
+                idx_name = idx_row[1]
+                is_unique = bool(idx_row[2])
+                if is_unique:
+                    idx_cols = [
+                        c[2] for c in connection.execute(f'PRAGMA index_info("{idx_name}")').fetchall()
+                    ]
+                    if idx_cols == ['username']:
+                        schema_items.add('user:unique_username')
+                        break
+        if 'config' in tables:
+            for idx_row in connection.execute('PRAGMA index_list(config)').fetchall():
+                idx_name = idx_row[1]
+                is_unique = bool(idx_row[2])
+                if is_unique:
+                    idx_cols = [
+                        c[2] for c in connection.execute(f'PRAGMA index_info("{idx_name}")').fetchall()
+                    ]
+                    if idx_cols == ['key']:
+                        schema_items.add('config:unique_key')
+                        break
+        return tables, schema_items, _read_alembic_revision(connection, tables)
     finally:
         connection.close()
 
@@ -72,9 +117,13 @@ def detect_schema_revision(schema_items):
         return LEGACY_REVISION
     if present != new_columns:
         return SORT_REVISION
-    if 'index:ix_sub_access_token' in schema_items:
+    if 'index:ix_sub_access_token' not in schema_items:
+        return TOKEN_REVISION
+    if 'user:token_version' not in schema_items or 'user:unique_username' not in schema_items:
         return INDEX_REVISION
-    return TOKEN_REVISION
+    if 'config:unique_key' in schema_items:
+        return CONFIG_SCHEMA_REVISION
+    return USER_AUTH_REVISION
 
 
 def repair_subscription_data(schema_items, db_path=DB_PATH):
@@ -84,7 +133,7 @@ def repair_subscription_data(schema_items, db_path=DB_PATH):
     if not any((repair_sort, repair_token, repair_legacy)):
         return
 
-    connection = sqlite3.connect(db_path)
+    connection = _open_sqlite(db_path)
     try:
         connection.execute('BEGIN IMMEDIATE')
         if repair_sort:
@@ -173,23 +222,36 @@ def align_alembic_revision(current_revision, schema_revision):
 
 
 def upgrade_database(app=None):
+    ensure_db_dir()
     app = app or create_app()
-    with app.app_context():
-        tables, schema_items, current_revision = read_schema_state()
-        if 'sub' not in tables:
+    db_path = _resolve_db_path(app)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with _init_file_lock(str(db_path.parent)), app.app_context():
+        tables, schema_items, current_revision = read_schema_state(db_path)
+        app_tables = {'user', 'sub', 'login', 'config'}
+        if not (tables & app_tables):
             db.create_all()
             stamp(directory=MIGRATIONS_DIR, revision='head')
+            create_db()
             return
 
-        repair_subscription_data(schema_items)
-        tables, schema_items, current_revision = read_schema_state()
-        schema_revision = detect_schema_revision(schema_items)
-        align_alembic_revision(current_revision, schema_revision)
-        upgrade(directory=MIGRATIONS_DIR, revision='head')
-        tables, schema_items, _ = read_schema_state()
-        repair_subscription_data(schema_items)
-        if detect_schema_revision(schema_items) != INDEX_REVISION:
+        if 'sub' not in tables:
+            # Legacy partial DB (e.g. old broken 43914e4334c4 that created only user without sub):
+            # reset stamp to base so idempotent 43914e4334c4 creates missing tables and full chain upgrades user/config.
+            stamp(directory=MIGRATIONS_DIR, revision='base')
+            upgrade(directory=MIGRATIONS_DIR, revision='head')
+        else:
+            repair_subscription_data(schema_items, db_path=db_path)
+            tables, schema_items, current_revision = read_schema_state(db_path)
+            schema_revision = detect_schema_revision(schema_items)
+            align_alembic_revision(current_revision, schema_revision)
+            upgrade(directory=MIGRATIONS_DIR, revision='head')
+
+        tables, schema_items, _ = read_schema_state(db_path)
+        repair_subscription_data(schema_items, db_path=db_path)
+        if detect_schema_revision(schema_items) != CONFIG_SCHEMA_REVISION:
             raise RuntimeError('数据库升级后仍未达到最新结构')
+        create_db()
 
 
 if __name__ == '__main__':

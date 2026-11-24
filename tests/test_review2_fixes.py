@@ -183,9 +183,11 @@ class Review2FixesTest(unittest.TestCase):
             content = f.read()
         self.assertIn('sublink:v3', content)
         self.assertIn('sublink-v3', content)
-        self.assertIn('network_mode: host', content)
-        self.assertIn('PORT=8000', content)
+        self.assertNotIn('network_mode: host', content)
+        self.assertIn('ports:', content)
+        self.assertIn('8000', content)
         self.assertIn('JWT_SECRET_KEY', content)
+        self.assertNotIn(':-sub', content)
 
     # 11. Surge auto 占位符反斜杠安全测试
     def test_surge_auto_replacement_with_backslash_no_regex_crash(self):
@@ -212,9 +214,11 @@ class Review2FixesTest(unittest.TestCase):
             access_token='surge-eq-token',
         )
         surge_conf = surge_encode([sub1, sub2])
-        self.assertIn('东京=01 =', surge_conf)
-        self.assertIn('东京=01 (2) =', surge_conf)
-        self.assertNotIn('东京=01 (2) =01 =', surge_conf)
+        # Surge 节点名中 '=' 必须净化为 '-' 防止配置语法破坏，并正确去重
+        self.assertIn('东京-01 =', surge_conf)
+        self.assertIn('东京-01 (2) =', surge_conf)
+        self.assertNotIn('东京=01 =', surge_conf)
+        self.assertNotIn('东京-01 (2) -01 =', surge_conf)
 
     # 13. Clash 策略组缺少 proxies 或为 None
     def test_clash_group_proxies_none_or_missing(self):

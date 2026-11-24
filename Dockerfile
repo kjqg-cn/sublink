@@ -1,20 +1,19 @@
 # =========================
 # Stage 1: Build Frontends
 # =========================
-FROM node:18-alpine AS frontend-builder
+FROM node:20-alpine AS frontend-builder
 WORKDIR /build
 
-# Build Vue 2 (Legacy frontend)
-COPY web/package*.json ./web/
-RUN cd web && npm install --legacy-peer-deps --registry=https://registry.npmmirror.com
-COPY web ./web
-RUN cd web && npm run build -- --no-clean
+# Install dependencies deterministically for optimal layer caching
+COPY web/package.json web/yarn.lock ./web/
+COPY web/next/package.json web/next/package-lock.json ./web/next/
+RUN cd /build/web && yarn install --frozen-lockfile --ignore-engines --registry=https://registry.npmmirror.com && \
+    cd /build/web/next && npm ci --registry=https://registry.npmmirror.com
 
-# Build Vue 3 (Next frontend)
-COPY web/next/package*.json ./web/next/
-RUN cd web/next && npm install --legacy-peer-deps --registry=https://registry.npmmirror.com
-COPY web/next ./web/next
-RUN cd web/next && npm run build
+# Copy frontend source once and build both frontends
+COPY web ./web
+RUN cd /build/web && yarn build && \
+    cd /build/web/next && npm run build
 
 # =========================
 # Stage 2: Runtime Image
@@ -22,11 +21,13 @@ RUN cd web/next && npm run build
 FROM python:3.10-slim
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tzdata gosu && \
+    rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Shanghai
 
 COPY requirements.txt .
-RUN pip3 install --upgrade pip && \
+RUN pip3 install --no-cache-dir --upgrade pip && \
     pip3 install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 COPY run.py .
@@ -35,12 +36,23 @@ COPY migrations migrations
 COPY init_user_pw.py .
 COPY init_login_log.py .
 COPY upgrade_db.py .
-COPY docker-compose.yml .
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Copy compiled frontend assets from builder stage
 COPY --from=frontend-builder /build/app/static app/static
 COPY --from=frontend-builder /build/app/templates app/templates
 
+# Create non-root runtime user (UID/GID 1000) and normalize entrypoint line endings.
+# Entrypoint adjusts /app/app/db ownership on bind-mounts when started as root, then drops to sublink via gosu.
+RUN groupadd -r -g 1000 sublink && \
+    useradd -r -u 1000 -g sublink -d /app -s /usr/sbin/nologin sublink && \
+    sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh && \
+    mkdir -p /app/app/db && \
+    chown -R sublink:sublink /app
+
 ENV PORT=5000
-CMD python upgrade_db.py && gunicorn -w 4 -b 0.0.0.0:${PORT} run:app
-EXPOSE ${PORT}
+ENV WORKERS=4
+EXPOSE 5000
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["sh", "-c", "python upgrade_db.py && exec gunicorn -w ${WORKERS:-4} -b 0.0.0.0:${PORT:-5000} run:app"]

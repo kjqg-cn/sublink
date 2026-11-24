@@ -1,27 +1,37 @@
 <template>
 <div>
-  <el-button @click="clash_config('edit')"> 编辑规则</el-button>
+  <el-button @click="handleConfig('edit')">编辑规则</el-button>
   <el-tag style="margin-left: 10px" size="mini" type="info">适配:ss ssr vmess vless trojan hy hy2</el-tag>
   <el-dialog
     title="clash规则编辑(所有订阅共用一个规则)"
     :visible.sync="dialogVisible"
     width="80%"
   >
-    <span>建议复制出来修改后在替换上去，这里修改内容会有卡顿</span>
-    <p>proxies节点字段会自己生成无需填写</p>
-    <p>proxy-groups下的proxies下里面写上auto会插入本订阅所有节点名称列表</p>
+    <span>建议复制出来修改后再替换上去，大模板直接编辑可能有卡顿</span>
+    <p>proxies 节点字段会自动生成无需填写</p>
+    <p>proxy-groups 下的 proxies 中写上 auto 会插入本订阅所有节点名称列表</p>
+    <div v-if="loadFailed" class="load-error-banner">
+      <span>{{ loadError }}</span>
+      <el-button size="mini" type="danger" plain :disabled="loading" @click="handleConfig('edit')">重新加载</el-button>
+    </div>
     <div style="margin-bottom: 10px"></div>
     <span>
       <el-input
-        v-model.lazy="config"
+        v-model="config"
         type="textarea"
-        rows="10"
+        :readonly="loading || saving || loadFailed"
+        rows="12"
       ></el-input>
     </span>
     <span slot="footer" class="dialog-footer">
-    <el-button @click="dialogVisible = false">取 消</el-button>
-    <el-button type="primary" @click="clash_config('save')">保 存</el-button>
-  </span>
+      <el-button @click="dialogVisible = false">取 消</el-button>
+      <el-button
+        type="primary"
+        :loading="saving"
+        :disabled="loading || saving || loadFailed"
+        @click="handleConfig('save')"
+      >保 存</el-button>
+    </span>
   </el-dialog>
 </div>
 </template>
@@ -33,46 +43,59 @@ export default {
   data () {
     return {
       dialogVisible: false,
-      config: ''
+      config: '',
+      loading: false,
+      saving: false,
+      loadFailed: false,
+      loadError: ''
     }
   },
-  created () {
-
-  },
   methods: {
-    async clash_config (index) {
-      // console.log(index)
+    async handleConfig (index) {
       if (index === 'edit') {
-        const { code, msg } = await GetClash({
-          index: 'read'
-        })
         this.dialogVisible = true
-        if (code === 200) {
-          this.config = msg
-        } else {
-          this.$message({
-            type: 'warning',
-            message: '读取不到，错误'
-          })
+        this.loading = true
+        this.loadFailed = false
+        this.loadError = ''
+        this.config = ''
+        try {
+          const { code, msg } = await GetClash({ index: 'read' })
+          if (code === 200 && typeof msg === 'string') {
+            this.config = msg
+          } else {
+            const detail = typeof msg === 'string' && msg.trim() ? msg.trim() : '读取规则失败'
+            this.loadFailed = true
+            this.loadError = `${detail}，已禁用保存以防覆盖原有规则`
+            this.$message({ type: 'warning', message: detail })
+          }
+        } catch (error) {
+          this.loadFailed = true
+          this.loadError = '读取规则失败，已禁用保存以防覆盖原有规则'
+          this.$message.error('读取规则失败')
+        } finally {
+          this.loading = false
         }
+        return
       }
       if (index === 'save') {
-        // console.log('sava')
-        const { code, msg } = await GetClash({
-          index: 'save',
-          text: this.config
-        })
-        if (code === 200) {
-          this.$message({
-            type: 'success',
-            message: '保存成功'
+        if (this.loading || this.saving || this.loadFailed) return
+        this.saving = true
+        try {
+          const { code, msg } = await GetClash({
+            index: 'save',
+            text: this.config
           })
-          // console.log('保存成功')
-        } else {
           this.$message({
-            type: 'warning',
-            message: msg
+            type: code === 200 ? 'success' : 'warning',
+            message: msg || (code === 200 ? '保存成功' : '保存失败')
           })
+          if (code === 200) {
+            this.dialogVisible = false
+          }
+        } catch (error) {
+          this.$message.error('保存规则失败')
+        } finally {
+          this.saving = false
         }
       }
     }
@@ -81,5 +104,15 @@ export default {
 </script>
 
 <style scoped>
-
+.load-error-banner {
+  align-items: center;
+  background: #fef0f0;
+  border: 1px solid #fbc4c4;
+  border-radius: 4px;
+  color: #f56c6c;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding: 8px 12px;
+}
 </style>

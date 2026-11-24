@@ -7,6 +7,7 @@
           <span>集中管理节点、生成订阅地址</span>
         </div>
         <div class="header-account">
+          <el-button size="small" type="primary" plain @click="handleOpenNext">体验新版</el-button>
           <span>{{ username }}</span>
           <el-button size="small" @click="handleLogout">退出</el-button>
         </div>
@@ -55,7 +56,13 @@
                   <el-input v-model.trim="NewNode.node" type="textarea" rows="10" placeholder="节点" />
                   <div style="margin-bottom: 10px"></div>
 
-                  <el-input v-model.trim="NewNode.remarks" placeholder="备注" @keyup.enter.native="handleNewNode" />
+                  <el-input
+                    v-model.trim="NewNode.remarks"
+                    maxlength="40"
+                    show-word-limit
+                    placeholder="可选备注（无 #名称 节点导出时自动兜底）"
+                    @keyup.enter.native="handleNewNode"
+                  />
                   <span slot="footer" class="dialog-footer">
                     <el-button @click="NewNode.dialogVisible = false">取 消</el-button>
                     <el-button type="primary" @click="handleNewNode">确 定</el-button>
@@ -64,8 +71,8 @@
                 <div class="node-toolbar"><el-button icon="el-icon-edit-outline" @click="batchDialogVisible = true">批量编辑节点</el-button></div>
                 <Nodelist :list="NodeList" @RefreshSub="RefreshSub" @CopySubNode="CopySubNode"></Nodelist>
               <el-dialog title="批量编辑节点" :visible.sync="batchDialogVisible" width="80%">
-                <div class="batch-edit-tip">每行一个节点，节点和备注使用 | 分隔。此操作不会改变订阅列表顺序。</div>
-                <el-input type="textarea" placeholder="节点多个用回车分开,每个节点最后面带上|为备注信息" v-model="optionSub" rows="20" />
+                <div class="batch-edit-tip">每行一个节点，节点和备注使用 | 分隔（节点链接自身含 | 时写作 \|；无 #名称 节点导出时自动用备注兜底）。此操作不会改变订阅列表顺序。</div>
+                <el-input type="textarea" placeholder="节点多个用回车分开，每个节点最后带上 |备注" v-model="optionSub" rows="20" />
                 <span slot="footer" class="dialog-footer">
                   <el-button @click="batchDialogVisible = false">取 消</el-button>
                   <el-button type="primary" @click="handleSet">保存全部节点</el-button>
@@ -127,9 +134,9 @@
           </div>
           <!--          创建订阅-->
           <div v-if="radio1 === '2'">
-            <el-input type="text" placeholder="订阅名称(支持emoji)" v-model.trim="name" maxlength="20" show-word-limit />
+            <el-input type="text" placeholder="订阅名称(支持emoji，最多40字)" v-model.trim="name" maxlength="40" show-word-limit />
             <div style="margin-bottom: 10px"></div>
-            <el-input type="textarea" placeholder="订阅或者节点多个用回车分开,每个节点最后面带上|为备注信息" v-model="sub" rows="10" />
+            <el-input type="textarea" placeholder="订阅或者节点多个用回车分开；节点与备注用 | 分隔（节点含 | 可写作 \|，无 #名称 节点导出时自动用备注兜底）" v-model="sub" rows="10" />
             <div style="margin-bottom: 10px"></div>
             <el-button round style="position: relative;left: 50%;transform: translate(-50%)" @click="handleCreate">创建订阅
             </el-button>
@@ -137,7 +144,7 @@
           <div v-if="radio1 === '3'">
             <MyParser></MyParser>
           </div>
-          <div v-if="radio1 === '4'" class="settings-container" @change="handleConfig">
+          <div v-if="radio1 === '4'" class="settings-container">
             <div class="setting-item">
               <el-checkbox v-model="Config.udp" @change="handleConfig">开启 UDP</el-checkbox>
               <el-tooltip effect="dark" content="控制导出的客户端配置（如 Clash 的 udp: true、Surge 的 udp-relay）。开启后客户端才会向节点发送 UDP 流量（用于游戏、语音通话及 QUIC 等）；若关闭，客户端将在本地禁止该节点的 UDP 转发。" placement="top">
@@ -199,6 +206,7 @@
 <script>
 import { GetSubs, CreateSub, DelSub, SetSub, RenameSub, CreateNode, SortSubs, SetSubLegacy } from '@/api/sub'
 import { SetConfig, GetConfig } from '@/api/config'
+import { decodeJwtPayload, readStoredToken } from '@/utils/request'
 import USER from '@/components/user'
 import MyClash from '@/components/clash'
 import MySurge from '@/components/surge'
@@ -227,7 +235,9 @@ export default {
       legacyEnabled: false,
       legacyUpdating: false,
       optionList: [],
-      timer: null,
+      createTimer: null,
+      delTimer: null,
+      configTimer: null,
       dragSubName: '',
       batchDialogVisible: false,
       EDIT: {
@@ -255,29 +265,42 @@ export default {
   },
   created () {
     this.handleCurrentUser()
+    window.addEventListener('storage', this.handleCurrentUser)
     this.GetSubs()
     this.GetConfig()
   },
+  beforeDestroy () {
+    window.removeEventListener('storage', this.handleCurrentUser)
+    clearTimeout(this.createTimer)
+    clearTimeout(this.delTimer)
+    clearTimeout(this.configTimer)
+  },
   watch: {
     optionValue (newValue) {
-      // console.log('监视' + newValue)
-      // console.log(this.list)
       this.NodeList = this.list.filter(item => item.name === newValue)
-      // console.log(res)
-      const list = this.NodeList.map(item => item.node + (item.remarks ? '|' + item.remarks : ''))
-      // console.log(list.join('\n'))
       this.optionValue = newValue
-      this.optionSub = list.join('\n')
+      this.optionSub = this.formatBatchLines(this.NodeList)
       this.legacyEnabled = this.NodeList.some(item => item.legacy_enabled)
       this.handleUrl('edit')
     }
   },
   methods: {
+    formatBatchLines (nodes) {
+      return nodes
+        .map(item => String(item.node || '').replace(/\\/g, '\\\\').replace(/\|/g, '\\|') + (item.remarks ? '|' + item.remarks : ''))
+        .join('\n')
+    },
+    handleOpenNext () {
+      location.href = '/next'
+    },
     handleCurrentUser () {
-      const token = JSON.parse(localStorage.getItem('token'))
-      if (!token) return
-      const payload = token.split('.')[1]
-      this.username = JSON.parse(atob(payload)).sub
+      const token = readStoredToken('token')
+      if (!token) {
+        this.username = ''
+        return
+      }
+      const payload = decodeJwtPayload(token)
+      this.username = (payload && payload.sub) || ''
     },
     handleLogout () {
       localStorage.removeItem('token')
@@ -285,71 +308,81 @@ export default {
       this.$router.push('/login')
     },
     async GetSubs () { // 获取全部订阅
-      const res = await GetSubs()
-      if (res.length === 0) {
-        this.list = []
-        this.optionList = []
-        this.NodeList = []
-        this.optionValue = ''
-        this.optionSub = ''
-        this.optionUrl = ''
-        this.legacyUrl = ''
-        this.legacyEnabled = false
-      } else {
-        this.list = res
-        this.optionList = Array.from(new Set(this.list.map(item => item.name)))
-        this.NodeList = this.list.filter(item => item.name === this.optionValue)
-        const NodeList = this.NodeList.map(item => item.node + (item.remarks ? '|' + item.remarks : ''))
-        // console.log(list.join('\n'))
-        this.optionSub = NodeList.join('\n')
-        this.legacyEnabled = this.NodeList.some(item => item.legacy_enabled)
+      try {
+        const res = await GetSubs()
+        if (!Array.isArray(res) || res.length === 0) {
+          this.list = []
+          this.optionList = []
+          this.NodeList = []
+          this.optionValue = ''
+          this.optionSub = ''
+          this.optionUrl = ''
+          this.legacyUrl = ''
+          this.legacyEnabled = false
+        } else {
+          this.list = res
+          this.optionList = Array.from(new Set(this.list.map(item => item.name)))
+          this.NodeList = this.list.filter(item => item.name === this.optionValue)
+          this.optionSub = this.formatBatchLines(this.NodeList)
+          this.legacyEnabled = this.NodeList.some(item => item.legacy_enabled)
+        }
+        this.list.length > 0 ? this.radio1 = '1' : this.radio1 = '2'
+      } catch (error) {
+        this.$message.error('加载订阅列表失败')
       }
-      this.list.length > 0 ? this.radio1 = '1' : this.radio1 = '2'
     },
     async handleCreate () {
       if (this.sub === '' || this.name === '') return false
       // await this.isSubAddress('create')
-      clearTimeout(this.timer)
-      this.timer = setTimeout(async () => {
-        this.sublist = this.sub.split('\n')
-        const { code, msg } = await CreateSub({
-          name: this.name.trim(),
-          node: this.sublist
+      clearTimeout(this.createTimer)
+      this.createTimer = setTimeout(async () => {
+        const subName = this.name.trim()
+        if (!subName || !this.sub) return
+        let created = false
+        try {
+          this.sublist = this.sub.split('\n')
+          const { code, msg } = await CreateSub({
+            name: subName,
+            node: this.sublist
+          })
+          this.$message({
+            message: msg,
+            type: code === 200 ? 'success' : 'warning'
+          })
+          if (code === 200) {
+            created = true
+            await this.GetSubs() // 刷新全部节点
+            this.radio1 = '1' // 切换到编辑订阅
+            this.optionValue = subName // 编辑订阅标题选择
+            this.name = ''
+            this.sub = ''
+          }
+        } catch (error) {
+          const serverMsg = error?.response?.data?.msg
+          this.$message.error(created ? '订阅已创建，但刷新列表失败' : (serverMsg || '创建订阅失败'))
+        }
+      }, 1000)
+    },
+    async handleSet () { // 编辑订阅
+      if (this.optionSub === '') return false
+      const res = this.list.find(item => item.name === this.optionValue)
+      const list = this.optionSub.split('\n')
+      try {
+        const { code, msg } = await SetSub({
+          name: this.optionValue.trim(),
+          node: res ? res.node : '',
+          newNode: list
         })
         this.$message({
           message: msg,
           type: code === 200 ? 'success' : 'warning'
         })
         if (code === 200) {
+          this.batchDialogVisible = false
           await this.GetSubs() // 刷新全部节点
-          this.radio1 = '1' // 切换到编辑订阅
-          this.optionValue = this.name // 编辑订阅标题选择
-          this.name = ''
-          this.sub = ''
         }
-      }, 1000)
-    },
-    async handleSet () { // 编辑订阅
-      if (this.optionSub === '') return false
-      // await this.isSubAddress('edit')
-      const res = this.list.find(item => item.name === this.optionValue)
-      console.log(res, res.node)
-      const list = this.optionSub.split('\n')
-      const { code, msg } = await SetSub({
-        name: this.optionValue.trim(),
-        node: res.node,
-        newNode: list
-      })
-      this.$message({
-        message: msg,
-        type: code === 200 ? 'success' : 'warning'
-      })
-      if (code === 200) {
-        this.batchDialogVisible = false
-        // console.log('修改成功')
-        // this.optionValue = ''
-        this.GetSubs() // 刷新全部节点
-        // console.log(this.NodeList)
+      } catch (error) {
+        this.$message.error('保存节点失败')
       }
     },
     handleSubDragStart (name) {
@@ -387,8 +420,8 @@ export default {
       // window.open(url)
     },
     handleDel () {
-      clearTimeout(this.timer)
-      this.timer = setTimeout(() => {
+      clearTimeout(this.delTimer)
+      this.delTimer = setTimeout(() => {
         this.$confirm(`删除后无法恢复，确定删除订阅“${this.optionValue}”吗？`, '删除订阅', {
           confirmButtonText: '确认删除',
           cancelButtonText: '取消',
@@ -396,26 +429,48 @@ export default {
           center: false,
           customClass: 'delete-sub-confirm'
         }).then(async () => {
-          const { code, msg } = await DelSub(this.optionValue)
-          if (code === 200) {
-            this.optionList = this.optionList.filter(item => item !== this.optionValue)
-            this.optionValue = '' // 更新选项值为空字符串
+          try {
+            const { code, msg } = await DelSub(this.optionValue)
+            if (code === 200) {
+              this.optionList = this.optionList.filter(item => item !== this.optionValue)
+              this.optionValue = '' // 更新选项值为空字符串
+            }
+            this.$message({
+              type: code === 200 ? 'success' : 'warning',
+              message: msg
+            })
+            if (this.optionList.length === 0) this.radio1 = '2'
+          } catch (error) {
+            this.$message.error('删除订阅失败')
           }
-          this.$message({
-            type: code === 200 ? 'success' : 'warning',
-            message: msg
-          })
-          if (this.optionList.length === 0) this.radio1 = '2'
         }).catch(() => {
 
         })
       }, 100)
     },
-    handleCopy (value) {
-      this.$copyText(value)
+    async handleCopy (value) {
+      let copied = false
+      try {
+        await this.$copyText(value)
+        copied = true
+      } catch (error) {
+        try {
+          const textarea = document.createElement('textarea')
+          textarea.value = value
+          textarea.setAttribute('readonly', '')
+          textarea.style.position = 'fixed'
+          textarea.style.opacity = '0'
+          document.body.appendChild(textarea)
+          textarea.select()
+          copied = document.execCommand('copy')
+          document.body.removeChild(textarea)
+        } catch (fallbackError) {
+          copied = false
+        }
+      }
       this.$message({
-        type: 'success',
-        message: '复制成功'
+        type: copied ? 'success' : 'error',
+        message: copied ? '复制成功' : '复制失败'
       })
     },
     handleUrl (value) {
@@ -474,66 +529,81 @@ export default {
     },
     async handleRename (rename) {
       if (this.optionValue !== '' && rename !== '') {
-        const { code, msg } = await RenameSub(this.optionValue,
-          {
-            newName: rename
+        try {
+          const { code, msg } = await RenameSub(this.optionValue,
+            {
+              newName: rename
+            }
+          )
+          this.$message({
+            message: msg,
+            type: code === 200 ? 'success' : 'warning'
+          })
+          if (code === 200) {
+            await this.GetSubs()
+            this.optionValue = rename // 更新当前订阅标题
+            this.handleUrl('edit')
           }
-        )
-        this.$message({
-          message: msg,
-          type: code === 200 ? 'success' : 'warning'
-        })
-        if (code === 200) {
-          await this.GetSubs()
-          this.optionValue = rename // 更新当前订阅标题
-          this.handleUrl('edit')
+        } catch (error) {
+          this.$message.error('重命名失败')
         }
       }
     },
     async handleNewNode () {
-      const { code, msg } = await CreateNode({
-        name: this.optionValue,
-        node: this.NewNode.node.trim(),
-        remarks: this.NewNode.remarks.trim()
-      })
-      if (code === 200) {
-        // console.log(code, msg)
-        this.GetSubs()
-        this.NewNode.dialogVisible = false
-        this.NewNode.node = ''
-        this.NewNode.remarks = ''
-      }
-      this.$message({
-        type: code === 200 ? 'success' : 'warning',
-        message: msg
-      })
-    },
-    handleConfig () {
-      clearTimeout(this.timer)
-      this.timer = setTimeout(async () => {
-        const { code, msg } = await SetConfig({
-          udp: this.Config.udp,
-          skipcert: this.Config.skipCert,
-          emoji: this.Config.emoji,
-          custom: this.Config.custom,
-          custom_loopback: this.Config.customLoopback,
-          custom_node_name: this.Config.customNodeName
+      try {
+        const { code, msg } = await CreateNode({
+          name: this.optionValue,
+          node: this.NewNode.node.trim(),
+          remarks: this.NewNode.remarks.trim()
         })
+        if (code === 200) {
+          await this.GetSubs()
+          this.NewNode.dialogVisible = false
+          this.NewNode.node = ''
+          this.NewNode.remarks = ''
+        }
         this.$message({
           type: code === 200 ? 'success' : 'warning',
           message: msg
         })
+      } catch (error) {
+        this.$message.error('新增节点失败')
+      }
+    },
+    handleConfig () {
+      clearTimeout(this.configTimer)
+      this.configTimer = setTimeout(async () => {
+        try {
+          const { code, msg } = await SetConfig({
+            udp: this.Config.udp,
+            skipcert: this.Config.skipCert,
+            emoji: this.Config.emoji,
+            custom: this.Config.custom,
+            custom_loopback: this.Config.customLoopback,
+            custom_node_name: this.Config.customNodeName
+          })
+          this.$message({
+            type: code === 200 ? 'success' : 'warning',
+            message: msg
+          })
+        } catch (error) {
+          this.$message.error('保存设置失败')
+        }
       }, 1000)
     },
     async GetConfig () {
-      const res = await GetConfig()
-      if (res) {
-        this.Config.udp = !!res.udp
-        this.Config.skipCert = !!res.skipcert
-        this.Config.emoji = !!res.emoji
-        this.Config.custom = !!res.custom
-        this.Config.customLoopback = !!res.custom_loopback
-        this.Config.customNodeName = !!res.custom_node_name
+      try {
+        const res = await GetConfig()
+        if (res) {
+          this.Config.udp = !!res.udp
+          this.Config.skipCert = !!res.skipcert
+          this.Config.emoji = !!res.emoji
+          this.Config.custom = !!res.custom
+          this.Config.customLoopback = !!res.custom_loopback
+          this.Config.customNodeName = !!res.custom_node_name
+        }
+      } catch (error) {
+        this.$message.error('加载全局设置失败')
       }
     }
   },

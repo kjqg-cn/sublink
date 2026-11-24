@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
+import { readStoredToken } from '@/utils/request'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -59,7 +60,7 @@ const router = createRouter({
 
 router.beforeEach((to, _from, next) => {
   document.title = (to.meta.title as string) ?? 'Sublink'
-  const token = localStorage.getItem('token')
+  const token = readStoredToken('token')
   if (to.path !== '/login' && !token) {
     next('/login')
     return

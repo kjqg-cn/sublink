@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, ref, type VNodeChild } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, ref, watch, type VNodeChild } from 'vue'
 import { useRouter, useRoute, RouterLink } from 'vue-router'
 import {
   NLayout,
@@ -18,6 +18,20 @@ import { themeMode, toggleTheme } from '@/theme'
 const router = useRouter()
 const route = useRoute()
 const username = ref(currentUsername())
+
+function syncUsername() {
+  username.value = currentUsername()
+}
+
+watch(() => route.fullPath, syncUsername)
+
+onMounted(() => {
+  window.addEventListener('storage', syncUsername)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('storage', syncUsername)
+})
 
 function renderIcon(path: string): () => VNodeChild {
   return () =>

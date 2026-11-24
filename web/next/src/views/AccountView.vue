@@ -12,7 +12,6 @@ import {
   NInputGroup,
   NInputGroupLabel
 } from 'naive-ui'
-import MD5 from 'crypto-js/md5'
 import { setUser, currentUsername } from '@/api'
 
 const router = useRouter()
@@ -20,7 +19,8 @@ const message = useMessage()
 const dialog = useDialog()
 
 const username = ref(currentUsername())
-const newUserName = ref('')
+const oldPassword = ref('')
+const newUserName = ref(username.value)
 const password = ref('')
 const saving = ref(false)
 
@@ -31,20 +31,25 @@ function logout() {
 }
 
 async function handleSave() {
-  if (!/^\w{4,16}$/.test(newUserName.value)) {
-    message.warning('请输入 4-16 位字母或数字账号')
+  if (!oldPassword.value) {
+    message.warning('请输入当前密码')
     return
   }
-  if (!/^[\x20-\x7E]{4,32}$/.test(password.value)) {
-    message.warning('请输入 4-32 位密码，可包含大小写字母、数字和符号')
+  if (!/^[A-Za-z0-9_.-]{3,32}$/.test(newUserName.value)) {
+    message.warning('请输入 3-32 位字母、数字、下划线、点或连字符账号')
+    return
+  }
+  if (!/^[\x20-\x7E]{4,64}$/.test(password.value)) {
+    message.warning('请输入 4-64 位密码，可包含大小写字母、数字和符号')
     return
   }
   saving.value = true
   try {
     const { code, msg } = await setUser({
       username: username.value,
+      oldPassword: oldPassword.value,
       newUserName: newUserName.value,
-      password: MD5(password.value).toString()
+      password: password.value
     })
     message[code === 200 ? 'success' : 'warning'](msg)
     if (code === 200) {
@@ -76,10 +81,21 @@ function confirmLogout() {
       <n-button size="tiny" tertiary @click="confirmLogout">注销</n-button>
     </div>
     <n-form>
+      <n-form-item label="当前密码">
+        <n-input-group>
+          <n-input-group-label>当前密码</n-input-group-label>
+          <n-input
+            v-model:value="oldPassword"
+            type="password"
+            show-password-on="click"
+            placeholder="请输入当前密码以确认身份"
+          />
+        </n-input-group>
+      </n-form-item>
       <n-form-item label="新账号">
         <n-input-group>
           <n-input-group-label>新账号</n-input-group-label>
-          <n-input v-model:value="newUserName" placeholder="4-16 位字母或数字" />
+          <n-input v-model:value="newUserName" placeholder="3-32 位字母、数字或 _ . -" />
         </n-input-group>
       </n-form-item>
       <n-form-item label="新密码">
@@ -89,7 +105,7 @@ function confirmLogout() {
             v-model:value="password"
             type="password"
             show-password-on="click"
-            placeholder="4-32 位"
+            placeholder="4-64 位"
             @keydown.enter="handleSave"
           />
         </n-input-group>

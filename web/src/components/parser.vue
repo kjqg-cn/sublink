@@ -47,13 +47,16 @@ export default {
       const matches = this.ParserUrl.match(regex)
       // 输出匹配的网址
       if (matches === null) return this.$message.error('格式不正确')
-      const { code, msg } = await DecodeSub({ urls: matches })
-      if (code === 200) {
-        this.ParserList = msg.join('\n')
-        this.results = true
-      }
-      if (code === 400) {
-        this.$message.error(msg)
+      try {
+        const { code, msg } = await DecodeSub({ urls: matches })
+        if (code === 200 && Array.isArray(msg)) {
+          this.ParserList = msg.join('\n')
+          this.results = true
+        } else {
+          this.$message.error(typeof msg === 'string' && msg ? msg : '解析失败')
+        }
+      } catch (error) {
+        this.$message.error('解析失败')
       }
     }
 

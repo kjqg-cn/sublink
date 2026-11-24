@@ -170,7 +170,7 @@ async function handleAddNode() {
 // —— 批量编辑 ——
 function openBatch() {
   batchText.value = nodes.value
-    .map((n) => n.node + (n.remarks ? '|' + n.remarks : ''))
+    .map((n) => n.node.replace(/\\/g, '\\\\').replace(/\|/g, '\\|') + (n.remarks ? '|' + n.remarks : ''))
     .join('\n')
   showBatch.value = true
 }
@@ -321,7 +321,12 @@ onMounted(() => loadSubs())
           />
         </n-form-item>
         <n-form-item label="备注">
-          <n-input v-model:value="newNode.remarks" placeholder="可选备注" />
+          <n-input
+            v-model:value="newNode.remarks"
+            :maxlength="40"
+            show-count
+            placeholder="可选备注（无 #名称 节点导出时自动兜底）"
+          />
         </n-form-item>
       </n-form>
       <template #footer>
@@ -333,7 +338,7 @@ onMounted(() => loadSubs())
     </n-modal>
 
     <n-modal v-model:show="showBatch" preset="card" title="批量编辑节点" style="max-width: 760px">
-      <p class="batch-tip">每行一个节点，节点和备注使用 | 分隔。此操作会整体覆盖该订阅的节点。</p>
+      <p class="batch-tip">每行一个节点，节点和备注使用 | 分隔（节点链接自身含 | 时写作 \|；无 #名称 节点导出时自动用备注兜底）。此操作会整体覆盖该订阅的节点。</p>
       <code-textarea
         v-model="batchText"
         :rows="16"
@@ -348,7 +353,13 @@ onMounted(() => loadSubs())
     </n-modal>
 
     <n-modal v-model:show="showRename" preset="card" title="重命名订阅" style="max-width: 460px">
-      <n-input v-model:value="renameText" placeholder="新的订阅名称" @keyup.enter="handleRename" />
+      <n-input
+        v-model:value="renameText"
+        :maxlength="40"
+        show-count
+        placeholder="新的订阅名称"
+        @keyup.enter="handleRename"
+      />
       <template #footer>
         <div class="modal-footer">
           <n-button @click="showRename = false">取消</n-button>

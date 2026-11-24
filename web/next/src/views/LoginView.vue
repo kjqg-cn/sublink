@@ -2,7 +2,6 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage, NCard, NInput, NButton, NForm, NFormItem, NIcon } from 'naive-ui'
-import MD5 from 'crypto-js/md5'
 import { login } from '@/api'
 import { themeMode, toggleTheme } from '@/theme'
 
@@ -22,7 +21,7 @@ async function handleLogin() {
   try {
     const { code, msg, token, refresh } = await login({
       username: username.value,
-      password: MD5(password.value).toString()
+      password: password.value
     })
     message[code === 200 ? 'success' : 'warning'](msg)
     if (code === 200 && token) {
@@ -30,8 +29,9 @@ async function handleLogin() {
       localStorage.setItem('refresh', JSON.stringify(refresh))
       router.push('/')
     }
-  } catch {
-    message.error('登录请求失败')
+  } catch (err: unknown) {
+    const serverMsg = (err as { response?: { data?: { msg?: string } } })?.response?.data?.msg
+    message.error(serverMsg || '登录请求失败')
   } finally {
     loading.value = false
   }

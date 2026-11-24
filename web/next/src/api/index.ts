@@ -1,4 +1,4 @@
-import request from '@/utils/request'
+import request, { decodeJwtPayload, readStoredToken } from '@/utils/request'
 
 // —— 通用响应结构 ——
 export interface ApiResult<T = unknown> {
@@ -90,8 +90,12 @@ export const decodeSub = (urls: string[]) =>
   request.post('/decode_sub', { urls }) as Promise<ApiResult<string[]>>
 
 // —— 账号 / 记录 / 全局设置 ——
-export const setUser = (data: { username: string; newUserName: string; password: string }) =>
-  request.post('/set_user', data) as Promise<ApiResult<string>>
+export const setUser = (data: {
+  username: string
+  oldPassword: string
+  newUserName: string
+  password: string
+}) => request.post('/set_user', data) as Promise<ApiResult<string>>
 
 export interface LoginRecord {
   id: number
@@ -112,10 +116,10 @@ export interface GlobalConfig {
   custom_node_name: boolean
 }
 
-export const getConfig = () => request.post('/get_conifg') as Promise<Partial<GlobalConfig>>
+export const getConfig = () => request.post('/get_config') as Promise<Partial<GlobalConfig>>
 
 export const setConfig = (data: GlobalConfig) =>
-  request.post('/set_conifg', data) as Promise<ApiResult<string>>
+  request.post('/set_config', data) as Promise<ApiResult<string>>
 
 // —— 规则 / 配置编辑（clash / surge / sing-box 各一份，读写共用一个接口）——
 export type RuleKind = 'clash' | 'surge' | 'sing-box'
@@ -155,13 +159,8 @@ export function legacySubUrl(type: SubType, name: string): string {
 
 // —— 账号 ——
 export function currentUsername(): string {
-  const raw = localStorage.getItem('token')
-  if (!raw) return ''
-  try {
-    const token = JSON.parse(raw) as string
-    const payload = JSON.parse(atob(token.split('.')[1])) as { sub: string }
-    return payload.sub
-  } catch {
-    return ''
-  }
+  const token = readStoredToken('token')
+  if (!token) return ''
+  const payload = decodeJwtPayload<{ sub?: string }>(token)
+  return payload?.sub ?? ''
 }

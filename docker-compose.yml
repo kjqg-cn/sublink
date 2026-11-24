@@ -1,14 +1,19 @@
-version: '3'
-
 services:
   sublink:
     build: .
     image: sublink:v3
     container_name: sublink-v3
     restart: always
-    network_mode: host
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
     volumes:
-      - $PWD/db:/app/app/db
+      - ./db:/app/app/db
     environment:
-      - PORT=8000
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-sub}
+      - PORT=${PORT:-8000}
+      - WORKERS=${WORKERS:-4}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - TRUSTED_PROXY_COUNT=${TRUSTED_PROXY_COUNT:-}
+      - INIT_ADMIN_USERNAME=${INIT_ADMIN_USERNAME:-admin}
+      - INIT_ADMIN_PASSWORD=${INIT_ADMIN_PASSWORD:-}
+      - ENABLE_LOGIN_GEOIP=${ENABLE_LOGIN_GEOIP:-1}

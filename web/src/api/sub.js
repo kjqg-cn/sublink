@@ -9,10 +9,10 @@ const CreateNode = (obj) => { // 新建节点
   return request.post('/create_node', obj)
 }
 const GetSubName = (name) => { // 查看指定订阅节点
-  return request.post('/get_sub/' + name)
+  return request.post('/get_sub/' + encodeURIComponent(name))
 }
 const DelSub = (name) => { // 删除指定订阅
-  return request.post('/del_sub/' + name)
+  return request.post('/del_sub/' + encodeURIComponent(name))
 }
 const DelSubNode = (id) => { // 删除指定节点
   return request.post('/del_sub_node/' + id)
@@ -24,7 +24,7 @@ const DecodeSub = (obj) => {
   return request.post('/decode_sub', obj)
 }
 const RenameSub = (name, obj) => {
-  return request.post(`/rename_sub/${name}`, obj)
+  return request.post(`/rename_sub/${encodeURIComponent(name)}`, obj)
 }
 const SetNode = (obj) => { // 修改单个节点
   return request.post('/set_node', obj)

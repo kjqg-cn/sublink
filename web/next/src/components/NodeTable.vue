@@ -13,6 +13,7 @@ import {
   type DataTableColumns
 } from 'naive-ui'
 import { delSubNode, setNode, type SubNode } from '@/api'
+import { copyText } from '@/utils/clipboard'
 
 const props = defineProps<{ nodes: SubNode[]; loading: boolean }>()
 const emit = defineEmits<{ refresh: [] }>()
@@ -24,11 +25,9 @@ const showEdit = ref(false)
 const saving = ref(false)
 const edit = ref({ id: 0, node: '', remarks: '' })
 
-function copy(text: string) {
-  navigator.clipboard.writeText(text).then(
-    () => message.success('复制成功'),
-    () => message.error('复制失败')
-  )
+async function copy(text: string) {
+  const ok = await copyText(text)
+  message[ok ? 'success' : 'error'](ok ? '复制成功' : '复制失败')
 }
 
 function openEdit(row: SubNode) {
@@ -130,7 +129,12 @@ const columns: DataTableColumns<SubNode> = [
           <n-input v-model:value="edit.node" type="textarea" :rows="6" placeholder="节点链接" />
         </n-form-item>
         <n-form-item label="备注">
-          <n-input v-model:value="edit.remarks" placeholder="可选备注" />
+          <n-input
+            v-model:value="edit.remarks"
+            :maxlength="40"
+            show-count
+            placeholder="可选备注（无 #名称 节点导出时自动兜底）"
+          />
         </n-form-item>
       </n-form>
       <template #footer>

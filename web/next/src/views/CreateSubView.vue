@@ -41,8 +41,8 @@ async function handleCreate() {
       <n-form-item label="订阅名称">
         <n-input
           v-model:value="name"
-          placeholder="订阅名称（支持 emoji）"
-          maxlength="20"
+          placeholder="订阅名称（支持 emoji，最多 40 字）"
+          :maxlength="40"
           show-count
         />
       </n-form-item>
@@ -50,7 +50,7 @@ async function handleCreate() {
         <code-textarea
           v-model="sub"
           :rows="12"
-          placeholder="订阅或节点，多个用回车分开，每个节点最后带上 |备注"
+          placeholder="订阅或节点，多个用回车分开；节点与备注用 | 分隔（节点链接含 | 可用 \| 转义，无 #名称 节点导出时自动用备注兜底）"
         />
       </n-form-item>
     </n-form>

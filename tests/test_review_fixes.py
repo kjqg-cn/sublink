@@ -39,22 +39,34 @@ class ReviewFixesTestCase(unittest.TestCase):
 
     # ================= 1. JWT 密钥环境变量读取 =================
     def test_jwt_secret_key_from_env_fallback(self):
-        # 未设置环境变量时，默认回退到 'sub'
-        with patch.dict(os.environ, {}, clear=True):
-            app = create_app()
-            self.assertEqual(app.config['JWT_SECRET_KEY'], 'sub')
+        # 未设置环境变量时，严禁回退到弱默认 'sub'，应自动生成强随机密钥并持久化
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            with patch('app.ensure_db_dir', return_value=td), \
+                    patch.dict(os.environ, {}, clear=True):
+                app1 = create_app()
+                app2 = create_app()
+                secret1 = app1.config['JWT_SECRET_KEY']
+                self.assertNotEqual(secret1, 'sub')
+                self.assertGreaterEqual(len(secret1), 32)
+                # 多 Worker / 重启复用同一持久化强密钥
+                self.assertEqual(secret1, app2.config['JWT_SECRET_KEY'])
 
     def test_jwt_secret_key_from_env_custom(self):
         # 设置环境变量时，读取配置值
-        with patch.dict(os.environ, {'JWT_SECRET_KEY': 'custom-jwt-secret-xyz'}):
+        with patch.dict(os.environ, {'JWT_SECRET_KEY': 'custom-jwt-secret-xyz-0123456789ab'}):
             app = create_app()
-            self.assertEqual(app.config['JWT_SECRET_KEY'], 'custom-jwt-secret-xyz')
+            self.assertEqual(app.config['JWT_SECRET_KEY'], 'custom-jwt-secret-xyz-0123456789ab')
 
     def test_jwt_secret_key_from_env_empty_fallback(self):
-        # 环境变量为空字符串时，回退到 'sub'
-        with patch.dict(os.environ, {'JWT_SECRET_KEY': ''}):
-            app = create_app()
-            self.assertEqual(app.config['JWT_SECRET_KEY'], 'sub')
+        # 环境变量为空字符串时，严禁回退到 'sub'，应自动生成强随机密钥
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            with patch('app.ensure_db_dir', return_value=td), \
+                    patch.dict(os.environ, {'JWT_SECRET_KEY': ''}, clear=True):
+                app = create_app()
+                self.assertNotEqual(app.config['JWT_SECRET_KEY'], 'sub')
+                self.assertGreaterEqual(len(app.config['JWT_SECRET_KEY']), 32)
 
     # ================= 2. 国旗 Emoji LRU 缓存 =================
     def test_get_country_emoji_lru_cache(self):
@@ -163,6 +175,7 @@ class ReviewFixesTestCase(unittest.TestCase):
 
             payload = {
                 'username': 'admin',
+                'oldPassword': 'password123',
                 'newUserName': 'admin_renamed',
                 'password': 'new_md5_hash_here'
             }
@@ -175,10 +188,19 @@ class ReviewFixesTestCase(unittest.TestCase):
             data = res.get_json()
             self.assertEqual(data.get('code'), 200)
 
-            # 验证修改成功生效
+            # 验证修改成功生效且以加盐慢哈希存储，且旧令牌立即失效
+            from app.model import is_password_hashed, verify_password
             user_in_db = User.query.filter_by(username='admin_renamed').first()
             self.assertIsNotNone(user_in_db)
-            self.assertEqual(user_in_db.password, 'new_md5_hash_here')
+            self.assertNotEqual(user_in_db.password, 'new_md5_hash_here')
+            self.assertTrue(is_password_hashed(user_in_db.password))
+            ok, _ = verify_password(user_in_db.password, 'new_md5_hash_here')
+            self.assertTrue(ok)
+            self.assertGreater(user_in_db.token_version, 1)
+
+            # 旧令牌修改后必须被吊销
+            revoked_res = client.post('/get_config', headers={'Authorization': f'Bearer {admin_token}'})
+            self.assertEqual(revoked_res.status_code, 401)
 
     def test_set_user_requires_jwt(self):
         with self.app.app_context():
@@ -208,26 +230,36 @@ class ReviewFixesTestCase(unittest.TestCase):
             self.assertIn('仅支持 http 或 https', data.get('msg', ''))
 
     def test_decode_sub_allows_loopback_and_internal_ip(self):
-        # 严格验证：不能阻断 127.0.0.1 / 内网 IP
+        # 默认必须拦截 127.0.0.1 / 内网 / 元数据 IP（SSRF 防护）；显式开启 ALLOW_PRIVATE_SUB_URLS 时才放行
         with self.app.app_context():
             client = self.app.test_client()
             token = create_access_token(identity='admin')
             headers = {'Authorization': f'Bearer {token}'}
 
+            with patch('requests.get') as mock_get:
+                res_blocked = client.post('/decode_sub', json={'urls': ['http://127.0.0.1:8080/sub']}, headers=headers)
+                self.assertEqual(res_blocked.status_code, 200)
+                self.assertEqual(res_blocked.get_json().get('code'), 400)
+                mock_get.assert_not_called()
+
             mock_resp = MagicMock()
             mock_resp.status_code = 200
+            mock_resp.headers = {}
             node_plain = 'ss://YWVzLTEyOC1nY206cGFzc0AxLjEuMS4xOjQ0Mw==#LoopbackNode'
             mock_resp.text = base64.b64encode(node_plain.encode()).decode()
 
-            with patch('requests.get', return_value=mock_resp) as mock_get:
+            with patch.dict(os.environ, {'ALLOW_PRIVATE_SUB_URLS': 'true'}), \
+                    patch('requests.get', return_value=mock_resp) as mock_get:
                 res = client.post('/decode_sub', json={'urls': ['http://127.0.0.1:8080/sub']}, headers=headers)
                 self.assertEqual(res.status_code, 200)
                 data = res.get_json()
                 self.assertEqual(data.get('code'), 200)
                 self.assertEqual(data.get('msg'), [node_plain])
-
-                # 验证传递了正确的 timeout 参数
-                mock_get.assert_called_once_with('http://127.0.0.1:8080/sub', timeout=(3, 10))
+                mock_get.assert_called_once()
+                _, kwargs = mock_get.call_args
+                self.assertEqual(kwargs.get('timeout'), (3, 10))
+                self.assertTrue(kwargs.get('verify'))
+                self.assertFalse(kwargs.get('allow_redirects'))
 
     def test_decode_sub_timeout_and_network_error(self):
         import requests.exceptions
@@ -243,14 +275,7 @@ class ReviewFixesTestCase(unittest.TestCase):
                 self.assertEqual(data.get('code'), 400)
                 self.assertIn('拉取订阅失败', data.get('msg', ''))
 
-    # ================= 6. app/xui.py 导入安全性 =================
-    def test_xui_import_has_no_side_effects(self):
-        with patch('requests.Session') as mock_session:
-            import app.xui
-            # 导入时不应实例化并调用网络请求
-            mock_session.assert_not_called()
-
-    # ================= 7. 深入边界与鲁棒性测试 =================
+    # ================= 6. 深入边界与鲁棒性测试 =================
     def test_get_country_emoji_empty_input(self):
         get_country_emoji.cache_clear()
         with patch('requests.get') as mock_get:
@@ -303,14 +328,22 @@ class ReviewFixesTestCase(unittest.TestCase):
             headers = {'Authorization': f'Bearer {admin_token}'}
 
             # 提交空白新用户名
-            res = client.post('/set_user', json={'username': 'admin', 'newUserName': '', 'password': 'pwd'}, headers=headers)
+            res = client.post(
+                '/set_user',
+                json={'username': 'admin', 'oldPassword': 'password123', 'newUserName': '', 'password': 'pwd'},
+                headers=headers,
+            )
             self.assertEqual(res.status_code, 200)
             data = res.get_json()
             self.assertEqual(data.get('code'), 400)
             self.assertIn('不能为空', data.get('msg', ''))
 
             # 提交空白密码
-            res = client.post('/set_user', json={'username': 'admin', 'newUserName': 'admin2', 'password': '  '}, headers=headers)
+            res = client.post(
+                '/set_user',
+                json={'username': 'admin', 'oldPassword': 'password123', 'newUserName': 'admin2', 'password': '  '},
+                headers=headers,
+            )
             self.assertEqual(res.status_code, 200)
             data = res.get_json()
             self.assertEqual(data.get('code'), 400)
@@ -325,6 +358,7 @@ class ReviewFixesTestCase(unittest.TestCase):
             # attacker 尝试将自己的用户名重命名为已存在的 'admin'
             payload = {
                 'username': 'attacker',
+                'oldPassword': 'password456',
                 'newUserName': 'admin',
                 'password': 'attacker_new_password'
             }
@@ -357,29 +391,25 @@ class ReviewFixesTestCase(unittest.TestCase):
             self.assertIn('URL不能为空', data.get('msg', ''))
 
     def test_decode_sub_ssl_error_fallback(self):
+        # 遇 SSLError 严禁静默降级 verify=False，必须安全失败且不发起二次降级请求
         import requests.exceptions
         with self.app.app_context():
             client = self.app.test_client()
             token = create_access_token(identity='admin')
             headers = {'Authorization': f'Bearer {token}'}
 
-            node_plain = 'ss://YWVzLTEyOC1nY206cGFzc0AxLjEuMS4xOjQ0Mw==#SelfSignedNode'
-            mock_success = MagicMock()
-            mock_success.status_code = 200
-            mock_success.text = base64.b64encode(node_plain.encode()).decode()
-
-            def fake_get(url, timeout=None, verify=True):
+            def fake_get(url, timeout=None, verify=True, allow_redirects=False):
                 if verify is not False:
                     raise requests.exceptions.SSLError('certificate verify failed')
-                return mock_success
+                raise AssertionError('不应静默降级 verify=False')
 
             with patch('requests.get', side_effect=fake_get) as mock_get:
-                res = client.post('/decode_sub', json={'urls': ['https://10.0.0.2:8443/sub']}, headers=headers)
+                res = client.post('/decode_sub', json={'urls': ['https://example.com/sub']}, headers=headers)
                 self.assertEqual(res.status_code, 200)
                 data = res.get_json()
-                self.assertEqual(data.get('code'), 200)
-                self.assertEqual(data.get('msg'), [node_plain])
-                self.assertEqual(mock_get.call_count, 2)
+                self.assertEqual(data.get('code'), 400)
+                self.assertIn('拉取订阅失败', data.get('msg', ''))
+                self.assertEqual(mock_get.call_count, 1)
 
 
 if __name__ == '__main__':

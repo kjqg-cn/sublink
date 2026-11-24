@@ -16,11 +16,11 @@ import {
   setSubLegacy,
   subUrl,
   legacySubUrl,
-  type SubType,
-  type SubNode
+  type SubType
 } from '@/api'
 import QrModal from './QrModal.vue'
 import RuleEditorModal from './RuleEditorModal.vue'
+import { copyText } from '@/utils/clipboard'
 
 const props = defineProps<{ name: string; token: string; legacyEnabled: boolean }>()
 const emit = defineEmits<{ 'legacy-changed': [enabled: boolean] }>()
@@ -57,11 +57,9 @@ const legacyUrl = computed(() => legacySubUrl(subType.value, props.name))
 // clash/surge/sing-box 才有规则编辑。
 const ruleKind = computed(() => (subType.value === 'v2ray' ? null : subType.value))
 
-function copy(text: string) {
-  navigator.clipboard.writeText(text).then(
-    () => message.success('复制成功'),
-    () => message.error('复制失败')
-  )
+async function copy(text: string) {
+  const ok = await copyText(text)
+  message[ok ? 'success' : 'error'](ok ? '复制成功' : '复制失败')
 }
 
 function openQr(text: string) {

@@ -6,78 +6,156 @@ const baseURL = process.env.NODE_ENV === 'development' ? '/api' : ''
 const instance = axios.create({
   baseURL: baseURL
 })
-const isTokenExpired = () => {
-  const token = JSON.parse(localStorage.getItem('token'))
-  if (token) { // 判断是否过期
-    const payload = token.split('.')[1]
-    const decoded = JSON.parse(atob(payload))
-    const NowTime = Math.floor(new Date() / 1000)
-    return NowTime > decoded.exp
-  }
-}
-const SetRefresh = async () => { // 刷新token
-  console.log(baseURL)
-  try {
-    const response = await axios.post(`${baseURL}/refresh`, {}, {
-      headers: {
-        Authorization: 'Bearer ' + JSON.parse(localStorage.getItem('refresh'))
-      }
+
+let loadingCount = 0
+let loadingInstance = null
+let refreshPromise = null
+
+const showLoading = () => {
+  loadingCount += 1
+  if (!loadingInstance) {
+    loadingInstance = Loading.service({
+      lock: true,
+      text: 'Loading',
+      spinner: 'el-icon-loading',
+      background: 'rgba(0, 0, 0, 0.7)'
     })
-    if (response.status === 200) {
-      localStorage.setItem('token', JSON.stringify(response.data)) // 设置token
-      return response.data
-    }
-  } catch (error) {
-    if (error?.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('refresh')
-      location.reload()
-    }
-    // console.error('刷新令牌请求失败', error)
-    throw error // 抛出异常，由调用方处理
   }
 }
-// 添加请求拦截器
-instance.interceptors.request.use(async function (config) {
-  // 在发送请求之前做些什么
-  Loading.service({
-    lock: true,
-    text: 'Loading',
-    spinner: 'el-icon-loading',
-    background: 'rgba(0, 0, 0, 0.7)'
-  }) // 获取 Loading 实例
-  if (isTokenExpired()) { // 判断过期后刷新令牌
+
+const hideLoading = () => {
+  loadingCount = Math.max(0, loadingCount - 1)
+  if (loadingCount === 0 && loadingInstance) {
+    loadingInstance.close()
+    loadingInstance = null
+  }
+}
+
+export const readStoredToken = (key) => {
+  const raw = localStorage.getItem(key)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    return typeof parsed === 'string' && parsed.trim() ? parsed : null
+  } catch (e) {
+    localStorage.removeItem(key)
+    return null
+  }
+}
+
+export const decodeJwtPayload = (token) => {
+  if (!token || typeof token !== 'string') return null
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3 || !parts[1]) return null
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padLen = (4 - (base64.length % 4)) % 4
+    const padded = base64 + '='.repeat(padLen)
+    const binary = atob(padded)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+    const jsonText = new TextDecoder().decode(bytes)
+    return JSON.parse(jsonText)
+  } catch (e) {
+    return null
+  }
+}
+
+const clearAuthAndReload = () => {
+  localStorage.removeItem('token')
+  localStorage.removeItem('refresh')
+  if (!location.hash.startsWith('#/login')) {
+    location.reload()
+  }
+}
+
+const SetRefresh = async () => { // 刷新token（带并发互斥锁）
+  if (refreshPromise) {
+    return refreshPromise
+  }
+  const refresh = readStoredToken('refresh')
+  if (!refresh) {
+    clearAuthAndReload()
+    throw new Error('缺少刷新令牌')
+  }
+  refreshPromise = (async () => {
     try {
-      await SetRefresh()
-      // 刷新成功后重新发起请求
+      const response = await axios.post(`${baseURL}/refresh`, {}, {
+        headers: {
+          Authorization: 'Bearer ' + refresh
+        }
+      })
+      if (response.status === 200 && typeof response.data === 'string' && response.data.trim()) {
+        localStorage.setItem('token', JSON.stringify(response.data)) // 设置token
+        return response.data
+      }
+      clearAuthAndReload()
+      throw new Error('刷新令牌返回无效数据')
     } catch (error) {
-      throw new Error('Token 刷新失败')
+      const status = error?.response?.status
+      if (status === 401 || status === 422) {
+        clearAuthAndReload()
+      }
+      throw error // 抛出异常，由调用方处理
+    } finally {
+      refreshPromise = null
+    }
+  })()
+  return refreshPromise
+}
+
+const AUTH_ENDPOINT_RE = /^\/?(login|refresh)(\?|$)/
+
+// 添加请求拦截器
+instance.interceptors.request.use(function (config) {
+  showLoading()
+  const url = config.url || ''
+  if (!AUTH_ENDPOINT_RE.test(url)) {
+    const token = readStoredToken('token')
+    if (token) {
+      config.headers.Authorization = 'Bearer ' + token
     }
   }
-  config.headers.Authorization = 'Bearer ' + JSON.parse(localStorage.getItem('token'))
   return config
 }, function (error) {
-  // 对请求错误做些什么
+  hideLoading()
   return Promise.reject(error)
 })
 
-// 添加响应拦截器
+// 添加响应拦截器：服务端返回 401 时用 refresh token 刷新并重放请求，不依赖本地时钟
 instance.interceptors.response.use(function (response) {
-  // 2xx 范围内的状态码都会触发该函数。
-  // 对响应数据做点什么
-  const loading = Loading.service() // 获取 Loading 实例
-  loading.close() // 通过实例对象调用 close 方法
+  hideLoading()
   return response.data
-}, function (error) {
-  // 超出 2xx 范围的状态码都会触发该函数。
-  // 对响应错误做点什么
-  const loading = Loading.service()
-  loading.close()
-  if (error?.response?.status === 401) {
-    localStorage.removeItem('token')
-    localStorage.removeItem('refresh')
-    location.reload()
+}, async function (error) {
+  hideLoading()
+  const status = error?.response?.status
+  const originalConfig = error?.config
+  const url = originalConfig?.url || ''
+
+  if (
+    status === 401 &&
+    originalConfig &&
+    !originalConfig._retry &&
+    !AUTH_ENDPOINT_RE.test(url) &&
+    readStoredToken('refresh')
+  ) {
+    originalConfig._retry = true
+    try {
+      const newToken = await SetRefresh()
+      originalConfig.headers = originalConfig.headers || {}
+      originalConfig.headers.Authorization = 'Bearer ' + newToken
+      return instance(originalConfig)
+    } catch (refreshError) {
+      return Promise.reject(refreshError)
+    }
+  }
+
+  if (status === 401 || status === 422) {
+    clearAuthAndReload()
   }
   return Promise.reject(error)
 })
+
 export default instance

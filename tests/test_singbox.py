@@ -212,6 +212,88 @@ class SingBoxEncodeTest(unittest.TestCase):
         self.assertEqual(invalid_response.status_code, 200)
         self.assertEqual(invalid_response.get_json()['code'], 400)
 
+    def test_legacy_download_detour_uniform_migrated_to_default_http_client(self):
+        legacy_template = {
+            'outbounds': [
+                {'type': 'selector', 'tag': 'proxy', 'outbounds': ['auto', 'direct']},
+                {'type': 'direct', 'tag': 'direct'},
+            ],
+            'route': {
+                'final': 'proxy',
+                'rule_set': [
+                    {
+                        'type': 'remote',
+                        'tag': 'geosite-cn',
+                        'format': 'binary',
+                        'url': 'https://example.com/geosite-cn.srs',
+                        'download_detour': 'proxy',
+                    },
+                    {
+                        'type': 'remote',
+                        'tag': 'geoip-cn',
+                        'format': 'binary',
+                        'url': 'https://example.com/geoip-cn.srs',
+                        'download_detour': 'proxy',
+                    },
+                ],
+            },
+        }
+        with open(os.path.join(self.temp_dir.name, 'db', 'sing-box.json'), 'w', encoding='utf-8') as f:
+            json.dump(legacy_template, f)
+
+        config = self.encode([])
+        self.assertEqual(config['http_clients'], [{'tag': 'remote-client', 'detour': 'proxy'}])
+        self.assertEqual(config['route']['default_http_client'], 'remote-client')
+        for rs in config['route']['rule_set']:
+            self.assertNotIn('download_detour', rs)
+            self.assertNotIn('http_client', rs)
+
+    def test_legacy_download_detour_mixed_and_implicit_default_migrated(self):
+        mixed_template = {
+            'outbounds': [
+                {'type': 'selector', 'tag': 'proxy', 'outbounds': ['auto', 'direct']},
+                {'type': 'direct', 'tag': 'direct'},
+            ],
+            'route': {
+                'final': 'proxy',
+                'rule_set': [
+                    {
+                        'type': 'remote',
+                        'tag': 'rs-proxy',
+                        'format': 'binary',
+                        'url': 'https://example.com/a.srs',
+                        'download_detour': 'proxy',
+                    },
+                    {
+                        'type': 'remote',
+                        'tag': 'rs-direct',
+                        'format': 'binary',
+                        'url': 'https://example.com/b.srs',
+                        'download_detour': 'direct',
+                    },
+                    {
+                        'type': 'remote',
+                        'tag': 'rs-implicit',
+                        'format': 'binary',
+                        'url': 'https://example.com/c.srs',
+                    },
+                ],
+            },
+        }
+        with open(os.path.join(self.temp_dir.name, 'db', 'sing-box.json'), 'w', encoding='utf-8') as f:
+            json.dump(mixed_template, f)
+
+        config = self.encode([])
+        clients = {c['tag']: c['detour'] for c in config['http_clients']}
+        self.assertEqual(clients, {'remote-client': 'proxy', 'remote-client-direct': 'direct'})
+        self.assertEqual(config['route']['default_http_client'], 'remote-client')
+        by_tag = {rs['tag']: rs for rs in config['route']['rule_set']}
+        for rs in by_tag.values():
+            self.assertNotIn('download_detour', rs)
+        self.assertEqual(by_tag['rs-proxy']['http_client'], 'remote-client')
+        self.assertEqual(by_tag['rs-direct']['http_client'], 'remote-client-direct')
+        self.assertNotIn('http_client', by_tag['rs-implicit'])
+
 
 if __name__ == '__main__':
     unittest.main()

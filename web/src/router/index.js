@@ -1,5 +1,6 @@
 import Vue from 'vue'
 import VueRouter from 'vue-router'
+import { readStoredToken } from '@/utils/request'
 
 Vue.use(VueRouter)
 
@@ -19,14 +20,6 @@ const routes = [
       title: '订阅管理系统'
     },
     component: () => import('@/views/index')
-  },
-  {
-    path: '/url/:name?',
-    name: 'url',
-    meta: {
-      title: '订阅查看'
-    },
-    component: () => import('@/views/url')
   }
 ]
 
@@ -36,10 +29,10 @@ const router = new VueRouter({
   routes
 })
 router.beforeEach((to, from, next) => {
-  document.title = to.meta.title
-  const token = JSON.parse(localStorage.getItem('token'))
+  document.title = (to.meta && to.meta.title) || '订阅管理系统'
+  const token = readStoredToken('token')
   if (to.path !== '/login' && !token) { // 判断是否登录
-    router.push('/login') // 如果没登录直接跳回登录页
+    return next('/login') // 如果没登录直接跳回登录页
   }
   next()
 })

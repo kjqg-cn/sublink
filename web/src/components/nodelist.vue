@@ -26,7 +26,9 @@
 
     <el-input
       v-model.trim="Edit.remarks"
-      placeholder="备注"
+      maxlength="40"
+      show-word-limit
+      placeholder="可选备注（无 #名称 节点导出时自动兜底）"
       @keyup.enter.native="handleEdit"
     />
     <span slot="footer" class="dialog-footer">
@@ -62,7 +64,6 @@ export default {
       this.$emit('CopySubNode', node)
     },
     handleDel ({ id, node, remarks }) {
-      console.log(id)
       const nodeLabel = remarks && remarks !== '无备注' ? remarks : node.slice(0, 40)
       this.$confirm(`删除后无法恢复，确定删除节点“${nodeLabel}”吗？`, '删除节点', {
         confirmButtonText: '确认删除',
@@ -71,14 +72,18 @@ export default {
         center: false,
         customClass: 'delete-sub-confirm'
       }).then(async () => {
-        const { code, msg } = await DelSubNode(id)
-        if (code === 200) {
-          this.$emit('RefreshSub')
+        try {
+          const { code, msg } = await DelSubNode(id)
+          if (code === 200) {
+            this.$emit('RefreshSub')
+          }
+          this.$message({
+            type: code === 200 ? 'success' : 'warning',
+            message: msg
+          })
+        } catch (error) {
+          this.$message.error('删除节点失败')
         }
-        this.$message({
-          type: code === 200 ? 'success' : 'warning',
-          message: msg
-        })
       }).catch(() => {
 
       })
@@ -90,20 +95,23 @@ export default {
       this.dialogVisible = true
     },
     async handleEdit () {
-      const { code, msg } = await SetNode({
-        id: this.Edit.id,
-        node: this.Edit.node.trim(),
-        remarks: this.Edit.remarks.trim()
-      })
-      if (code === 200) {
-        // console.log(code, msg)
-        this.$emit('RefreshSub')
-        this.dialogVisible = false
+      try {
+        const { code, msg } = await SetNode({
+          id: this.Edit.id,
+          node: this.Edit.node.trim(),
+          remarks: this.Edit.remarks.trim()
+        })
+        if (code === 200) {
+          this.$emit('RefreshSub')
+          this.dialogVisible = false
+        }
+        this.$message({
+          type: code === 200 ? 'success' : 'warning',
+          message: msg
+        })
+      } catch (error) {
+        this.$message.error('保存节点失败')
       }
-      this.$message({
-        type: code === 200 ? 'success' : 'warning',
-        message: msg
-      })
     }
 
   }
