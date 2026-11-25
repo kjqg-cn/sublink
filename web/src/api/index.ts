@@ -31,6 +31,33 @@ export const login = (data: { username: string; password: string }) =>
 // —— 订阅 ——
 export const getSubs = () => request.post('/get_subs') as Promise<SubNode[]>
 
+interface SubSummaryDto {
+  name: string
+  count: number
+  sort_order: number
+}
+
+export async function getSubSummaries(): Promise<SubSummary[]> {
+  const rows = (await request.post('/get_sub_summaries')) as SubSummaryDto[]
+  return rows.map((row) => ({
+    name: row.name,
+    count: row.count,
+    sortOrder: row.sort_order
+  }))
+}
+
+export const SUB_NAME_FORBIDDEN_RE = /[/\\?#\x00-\x1f\x7f]/
+
+export function validateSubName(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return '订阅名称不能为空'
+  if (trimmed.length > 40) return '订阅名称不能超过 40 个字符'
+  if (trimmed === '.' || trimmed === '..' || SUB_NAME_FORBIDDEN_RE.test(trimmed)) {
+    return '订阅名称不能包含 /、\\、?、# 或控制字符，且不能为 . 或 ..'
+  }
+  return null
+}
+
 export const getSubByName = (name: string) =>
   request.post('/get_sub/' + encodeURIComponent(name)) as Promise<SubNode[]>
 
@@ -106,11 +133,12 @@ export interface LoginRecord {
 
 export const getAddress = () => request.post('/get_ip_address') as Promise<LoginRecord[]>
 
-// 全局设置：后端存 udp / skipcert / emoji（注意 skipcert 为小写）。
+// 全局设置：后端存 udp / skipcert / emoji / hy2_pin_fallback（注意 skipcert 为小写）。
 export interface GlobalConfig {
   udp: boolean
   skipcert: boolean
   emoji: boolean
+  hy2_pin_fallback: boolean
   custom: boolean
   custom_loopback: boolean
   custom_node_name: boolean

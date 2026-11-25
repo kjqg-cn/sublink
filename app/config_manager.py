@@ -19,6 +19,7 @@ path = APP_DIR
 SkipCert = False
 Udp = False
 Emoji = False
+Hy2PinFallback = False
 CustomFeature = False
 CustomLoopback = False
 CustomNodeName = False
@@ -43,11 +44,12 @@ def use_runtime_config(cfg: Dict[str, bool]) -> Iterator[None]:
 
 def sync_config_globals(data: Dict[str, Any]) -> None:
     """Synchronize global config variables with dictionary and app.view under lock."""
-    global SkipCert, Udp, Emoji, CustomFeature, CustomLoopback, CustomNodeName
+    global SkipCert, Udp, Emoji, Hy2PinFallback, CustomFeature, CustomLoopback, CustomNodeName
     with _globals_lock:
         Udp = bool(data.get('udp', False))
         Emoji = bool(data.get('emoji', False))
         SkipCert = bool(data.get('skipcert', False))
+        Hy2PinFallback = bool(data.get('hy2_pin_fallback', False))
         CustomFeature = bool(data.get('custom', False))
         CustomLoopback = bool(data.get('custom_loopback', False))
         CustomNodeName = bool(data.get('custom_node_name', False))
@@ -57,6 +59,7 @@ def sync_config_globals(data: Dict[str, Any]) -> None:
             view_mod.Udp = Udp
             view_mod.Emoji = Emoji
             view_mod.SkipCert = SkipCert
+            view_mod.Hy2PinFallback = Hy2PinFallback
             view_mod.CustomFeature = CustomFeature
             view_mod.CustomLoopback = CustomLoopback
             view_mod.CustomNodeName = CustomNodeName
@@ -69,6 +72,7 @@ def _snapshot_globals() -> Dict[str, bool]:
             'udp': getattr(view_mod, 'Udp', Udp) if view_mod else Udp,
             'skipcert': getattr(view_mod, 'SkipCert', SkipCert) if view_mod else SkipCert,
             'emoji': getattr(view_mod, 'Emoji', Emoji) if view_mod else Emoji,
+            'hy2_pin_fallback': getattr(view_mod, 'Hy2PinFallback', Hy2PinFallback) if view_mod else Hy2PinFallback,
             'custom': getattr(view_mod, 'CustomFeature', CustomFeature) if view_mod else CustomFeature,
             'custom_loopback': getattr(view_mod, 'CustomLoopback', CustomLoopback) if view_mod else CustomLoopback,
             'custom_node_name': getattr(view_mod, 'CustomNodeName', CustomNodeName) if view_mod else CustomNodeName,
@@ -91,6 +95,7 @@ def get_runtime_config(sync_globals: bool = False) -> Dict[str, bool]:
             'udp': False,
             'skipcert': False,
             'emoji': False,
+            'hy2_pin_fallback': False,
             'custom': False,
             'custom_loopback': False,
             'custom_node_name': False,
@@ -132,6 +137,7 @@ def load_config() -> Dict[str, bool]:
             'udp': False,
             'skipcert': False,
             'emoji': False,
+            'hy2_pin_fallback': False,
             'custom': False,
             'custom_loopback': False,
             'custom_node_name': False,

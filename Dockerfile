@@ -49,6 +49,9 @@ RUN groupadd -r -g 1000 sublink && \
 
 ENV PORT=5000
 ENV WORKERS=4
+ENV GUNICORN_TIMEOUT=120
 EXPOSE 5000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import os, urllib.request; opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); opener.open(f'http://127.0.0.1:{os.environ.get(\"PORT\", \"5000\")}/healthz', timeout=3)" || exit 1
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["sh", "-c", "python upgrade_db.py && exec gunicorn -w ${WORKERS:-4} -b 0.0.0.0:${PORT:-5000} run:app"]
+CMD ["sh", "-c", "python upgrade_db.py && exec gunicorn -w ${WORKERS:-4} --timeout ${GUNICORN_TIMEOUT:-120} -b 0.0.0.0:${PORT:-5000} run:app"]

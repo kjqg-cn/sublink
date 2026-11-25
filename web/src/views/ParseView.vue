@@ -5,6 +5,7 @@ import { useMessage, NCard, NButton, NSpace, NTag } from 'naive-ui'
 import { decodeSub } from '@/api'
 import CodeTextarea from '@/components/CodeTextarea.vue'
 import { copyText } from '@/utils/clipboard'
+import { escapeDraftNodes, extractRemoteSubUrls, flattenDecodedNodes } from '@/utils/parseNodes'
 import { DRAFT_NODES_STORAGE_KEY, storageSet } from '@/utils/storage'
 
 const router = useRouter()
@@ -17,8 +18,8 @@ const parsing = ref(false)
 const output = computed(() => parsedList.value.join('\n'))
 
 async function handleParse() {
-  const matches = input.value.match(/(http|https):\/\/[^\s]+/g)
-  if (!matches) {
+  const matches = extractRemoteSubUrls(input.value)
+  if (!matches.length) {
     message.error('格式不正确，请粘贴 http(s) 订阅链接')
     return
   }
@@ -26,8 +27,13 @@ async function handleParse() {
   try {
     const { code, msg } = await decodeSub(matches)
     if (code === 200) {
-      parsedList.value = msg
-      message.success(`成功解析 ${msg.length} 条节点`)
+      const flattened = flattenDecodedNodes(msg)
+      parsedList.value = flattened
+      if (flattened.length > 0) {
+        message.success(`成功解析 ${flattened.length} 条节点`)
+      } else {
+        message.warning('未解析到有效节点')
+      }
     } else {
       message.error(String(msg))
     }
@@ -46,10 +52,7 @@ async function copyResult() {
 
 function createSubFromResult() {
   if (!parsedList.value.length) return
-  // 对含 \ 或 | 的原始节点做对称转义，防止提交 /create_sub 时被误拆为节点与备注。
-  const escapedDraft = parsedList.value
-    .map((line) => line.replace(/\\/g, '\\\\').replace(/\|/g, '\\|'))
-    .join('\n')
+  const escapedDraft = escapeDraftNodes(parsedList.value)
   if (!storageSet('session', DRAFT_NODES_STORAGE_KEY, escapedDraft)) {
     message.warning('解析结果过大或浏览器禁用存储，请点击「复制全部」后手动粘贴创建')
     return

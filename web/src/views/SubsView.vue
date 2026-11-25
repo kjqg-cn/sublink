@@ -16,14 +16,14 @@ import {
   NFormItem
 } from 'naive-ui'
 import {
-  getSubs,
+  getSubSummaries,
   getSubByName,
-  groupSubs,
   createNode,
   sortSubs,
   setSub,
   renameSub,
   delSub,
+  validateSubName,
   type SubNode,
   type SubSummary
 } from '@/api'
@@ -96,8 +96,7 @@ const savingRename = ref(false)
 async function loadSubs(preferredSub?: string) {
   loadingSubs.value = true
   try {
-    const all = await getSubs()
-    subs.value = groupSubs(all)
+    subs.value = await getSubSummaries()
     const candidate = preferredSub ?? activeSub.value
     if (candidate && subs.value.some((s) => s.name === candidate)) {
       if (candidate !== activeSub.value) {
@@ -264,6 +263,11 @@ async function handleRename() {
   const newName = renameText.value.trim()
   if (!newName || newName === activeSub.value) {
     showRename.value = false
+    return
+  }
+  const nameErr = validateSubName(newName)
+  if (nameErr) {
+    message.warning(nameErr)
     return
   }
   savingRename.value = true

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import yaml
 
 from app.config_manager import APP_DIR, get_runtime_config, use_runtime_config
-from app.core.parsers import NodeParse
+from app.core.parsers import NodeParse, parse_bandwidth_to_mbps
 from app.core.rewrite import get_node_server
 from app.core.utils import check_yaml_safe_aliases, get_proxy_type, redact_uri_credentials, remote_sub_types
 
@@ -32,6 +32,73 @@ _template_cache_lock = threading.Lock()
 _clash_template_cache: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 _surge_template_cache: Dict[str, Tuple[int, int, str]] = {}
 _singbox_template_cache: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+
+
+_YAML_12_AMBIGUOUS_STR_RE = re.compile(
+    r'^(?:'
+    r'[+-]?(?:0[xX][0-9a-fA-F]+|0[oO][0-7]+|0\d+|\d+(?:\.\d*)?[eE][+-]?\d+|\.\d+[eE][+-]?\d+)'
+    r'|[+-]?\.(?:inf|Inf|INF|nan|NaN|NAN)'
+    r')$'
+)
+
+
+class _QuotedYAMLStr(str):
+    """String scalar forced to be single-quoted in Clash YAML (e.g. REALITY short-id)."""
+
+
+class _ClashSafeDumper(yaml.SafeDumper):
+    """YAML SafeDumper quoting _QuotedYAMLStr and YAML 1.2 numeric-ambiguous strings (e.g. 1e234567)."""
+
+
+def _represent_quoted_yaml_str(dumper: yaml.SafeDumper, data: _QuotedYAMLStr) -> yaml.ScalarNode:
+    return dumper.represent_scalar('tag:yaml.org,2002:str', str(data), style="'")
+
+
+def _represent_safe_yaml_str(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
+    if _YAML_12_AMBIGUOUS_STR_RE.match(data):
+        return dumper.represent_scalar('tag:yaml.org,2002:str', data, style="'")
+    return dumper.represent_str(data)
+
+
+_ClashSafeDumper.add_representer(_QuotedYAMLStr, _represent_quoted_yaml_str)
+_ClashSafeDumper.add_representer(str, _represent_safe_yaml_str)
+
+
+def _validate_proxy_outbound(proxy_type: str, proxy: Dict[str, Any]) -> None:
+    """Validate mandatory host, port range (1..65535), and protocol credentials before export."""
+    server = str(proxy.get('server') or '').strip()
+    if not server or any(ch.isspace() for ch in server):
+        raise ValueError('节点缺少有效服务器地址')
+
+    raw_port = proxy.get('port')
+    if isinstance(raw_port, bool) or raw_port in (None, ''):
+        raise ValueError('节点缺少有效端口')
+    try:
+        port = int(raw_port)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f'节点端口格式无效: {raw_port}') from exc
+    if not (1 <= port <= 65535):
+        raise ValueError(f'节点端口超出合法范围 (1-65535): {port}')
+
+    ptype = str(proxy_type or proxy.get('type') or '').lower()
+    if ptype in ('vless', 'vmess'):
+        if not str(proxy.get('uuid') or '').strip():
+            raise ValueError(f'{ptype} 节点缺少 uuid')
+    elif ptype == 'ss':
+        cipher = str(proxy.get('cipher') or '').strip()
+        if not cipher:
+            raise ValueError('ss 节点缺少加密方式 cipher')
+        if cipher.lower() != 'none' and not str(proxy.get('password') or ''):
+            raise ValueError('ss 节点缺少密码')
+    elif ptype == 'ssr':
+        if not all(str(proxy.get(k) or '').strip() for k in ('cipher', 'protocol', 'obfs')) or not str(proxy.get('password') or ''):
+            raise ValueError('ssr 节点缺少必要认证或加密字段')
+    elif ptype == 'trojan':
+        if not str(proxy.get('password') or ''):
+            raise ValueError('trojan 节点缺少密码')
+    elif ptype in ('hy2', 'hysteria2'):
+        if not str(proxy.get('password') or proxy.get('auth') or ''):
+            raise ValueError('hysteria2 节点缺少认证密码')
 
 
 def clear_template_cache() -> None:
@@ -363,9 +430,15 @@ def clash_encode(subs: Any) -> str:
         try:
             proxy = _parse_clash_node(raw_node)
             if proxy:
+                _validate_proxy_outbound(proxy.get('type') or get_proxy_type(raw_node), proxy)
                 raw_name = str(proxy.get('name') or '').strip() or fallback_remark
                 name = get_unique_proxy_name(raw_name, used_names, index, counts)
                 proxy['name'] = name
+                reality_opts = proxy.get('reality-opts')
+                if isinstance(reality_opts, dict) and reality_opts.get('short-id') not in (None, ''):
+                    reality_opts = dict(reality_opts)
+                    reality_opts['short-id'] = _QuotedYAMLStr(str(reality_opts['short-id']))
+                    proxy['reality-opts'] = reality_opts
                 clash_config['proxies'].append(proxy)
                 proxy_name_list.append(name)
         except Exception as e:
@@ -394,7 +467,7 @@ def clash_encode(subs: Any) -> str:
                     deduped.append(item)
             proxy_group['proxies'] = deduped or ['DIRECT']
 
-    return yaml.dump(data, sort_keys=False, allow_unicode=True)
+    return yaml.dump(data, Dumper=_ClashSafeDumper, sort_keys=False, allow_unicode=True)
 
 
 def parse_surge_node(node: str) -> Optional[Tuple[str, str]]:
@@ -411,33 +484,48 @@ def parse_surge_node(node: str) -> Optional[Tuple[str, str]]:
 
     if proxy_type == 'ss':
         proxy = node_parse.ss()
+        _validate_proxy_outbound('ss', proxy)
         name = _sanitize_surge_name(proxy.get('name'))
         server = _sanitize_surge_host(proxy.get('server'))
-        port = int(proxy.get('port') or 8388)
+        port = int(proxy.get('port'))
         cipher = _sanitize_surge_token(proxy.get('cipher'))
         if not cipher:
             raise ValueError('Surge SS 节点加密方式非法')
+        plugin = str(proxy.get('plugin') or '').strip().lower()
+        plugin_opts = proxy.get('plugin-opts')
+        if plugin:
+            if plugin != 'obfs' or not isinstance(plugin_opts, dict):
+                logger.info('Surge 跳过不支持的 SS 插件: %s', plugin)
+                return None
+            obfs_mode = str(plugin_opts.get('mode') or '').strip().lower()
+            if obfs_mode not in ('http', 'tls'):
+                logger.info('Surge 跳过不支持的 SS obfs 模式: %s', obfs_mode)
+                return None
         password = _format_surge_param(proxy.get('password') or '')
         line = (
             f"{name} = ss, {server}, {port}, "
             f"encrypt-method={cipher}, password={password}, "
             f"tfo={_surge_bool(proxy.get('tfo'))}, udp-relay={_surge_bool(proxy.get('udp'))}"
         )
-        if str(proxy.get('plugin') or '').lower() == 'obfs' and isinstance(proxy.get('plugin-opts'), dict):
-            obfs_opts = proxy['plugin-opts']
-            obfs_mode = str(obfs_opts.get('mode') or '').strip().lower()
-            if obfs_mode in ('http', 'tls'):
-                line += f", obfs={obfs_mode}"
-                obfs_host = _format_surge_param(obfs_opts.get('host') or '')
-                if obfs_host:
-                    line += f", obfs-host={obfs_host}"
+        if plugin == 'obfs' and isinstance(plugin_opts, dict):
+            obfs_mode = str(plugin_opts.get('mode') or '').strip().lower()
+            line += f", obfs={obfs_mode}"
+            obfs_host = _format_surge_param(plugin_opts.get('host') or '')
+            if obfs_host:
+                line += f", obfs-host={obfs_host}"
         return line, name
 
     if proxy_type == 'vmess':
         proxy = node_parse.vmess()
+        _validate_proxy_outbound('vmess', proxy)
+        network = str(proxy.get('network') or '').strip().lower()
+        ws_opts = proxy.get('ws-opts') or {}
+        if network not in ('', 'tcp', 'raw', 'ws') or (network == 'ws' and isinstance(ws_opts, dict) and ws_opts.get('v2ray-http-upgrade')):
+            logger.info('Surge 跳过不支持的 VMess 传输协议: %s', network or 'httpupgrade')
+            return None
         name = _sanitize_surge_name(proxy.get('name'))
         server = _sanitize_surge_host(proxy.get('server'))
-        port = int(proxy.get('port') or 443)
+        port = int(proxy.get('port'))
         uuid = _format_surge_param(proxy.get('uuid') or '')
         line = (
             f"{name} = vmess,{server},{port},username={uuid},"
@@ -448,8 +536,7 @@ def parse_surge_node(node: str) -> Optional[Tuple[str, str]]:
         sni = _format_surge_param(proxy.get('servername') or proxy.get('sni') or '')
         if proxy.get('tls') and sni:
             line += f",sni={sni}"
-        if proxy.get('network') == 'ws':
-            ws_opts = proxy.get('ws-opts') or {}
+        if network == 'ws':
             ws_path = _format_surge_param(ws_opts.get('path') or '/') or '/'
             line += f",ws=true,ws-path={ws_path}"
             headers = ws_opts.get('headers')
@@ -465,9 +552,17 @@ def parse_surge_node(node: str) -> Optional[Tuple[str, str]]:
 
     if proxy_type == 'trojan':
         proxy = node_parse.trojan()
+        _validate_proxy_outbound('trojan', proxy)
+        network = str(proxy.get('network') or '').strip().lower()
+        ws_opts = proxy.get('ws-opts') or {}
+        if network not in ('', 'tcp', 'raw', 'ws') or (
+            network == 'ws' and isinstance(ws_opts, dict) and ws_opts.get('v2ray-http-upgrade')
+        ):
+            logger.info('Surge 跳过不支持的 Trojan 传输协议: %s', network or 'httpupgrade')
+            return None
         name = _sanitize_surge_name(proxy.get('name'))
         server = _sanitize_surge_host(proxy.get('server'))
-        port = int(proxy.get('port') or 443)
+        port = int(proxy.get('port'))
         password = _format_surge_param(proxy.get('password') or '')
         line = (
             f"{name} = trojan,{server},{port},password={password},"
@@ -477,7 +572,7 @@ def parse_surge_node(node: str) -> Optional[Tuple[str, str]]:
         sni = _format_surge_param(proxy.get('sni') or '')
         if sni:
             line += f",sni={sni}"
-        if proxy.get('network') == 'ws':
+        if network == 'ws':
             ws_opts = proxy.get('ws-opts') or {}
             ws_path = _format_surge_param(ws_opts.get('path') or '/') or '/'
             line += f",ws=true,ws-path={ws_path}"
@@ -490,9 +585,10 @@ def parse_surge_node(node: str) -> Optional[Tuple[str, str]]:
 
     if proxy_type in ('hy2', 'hysteria2'):
         proxy = node_parse.hysteria2()
+        _validate_proxy_outbound('hysteria2', proxy)
         name = _sanitize_surge_name(proxy.get('name'))
         server = _sanitize_surge_host(proxy.get('server'))
-        port = int(proxy.get('port') or 443)
+        port = int(proxy.get('port'))
         password = _format_surge_param(proxy.get('password') or '')
         skip_cert = _surge_bool(proxy.get('skip-cert-verify'))
         udp_relay = _surge_bool(proxy.get('udp'))
@@ -535,16 +631,19 @@ def _parse_surge_node(node: str) -> Optional[Tuple[str, str]]:
 
 
 def inject_surge_proxies(template_content: str, proxy_lines: List[str]) -> str:
-    """Insert formatted proxy lines into the [Proxy] section of Surge configuration."""
-    proxy_index = template_content.find('[Proxy]')
-    if proxy_index == -1:
+    """Insert formatted proxy lines into the [Proxy] section header (ignoring comments)."""
+    match = re.search(r'(?m)^[ \t]*\[Proxy\][ \t]*\r?$', template_content)
+    if not match:
         logger.warning('Surge 模板缺少 [Proxy] 区块')
         return template_content
-    new_key_value = '\n'.join(proxy_lines)
-    return (
-        template_content[:proxy_index]
-        + template_content[proxy_index:].replace('[Proxy]', f'[Proxy]\n{new_key_value}', 1)
-    )
+    if not proxy_lines:
+        return template_content
+    line_ending = '\r\n' if match.group(0).endswith('\r') else '\n'
+    new_key_value = line_ending.join(proxy_lines)
+    insert_pos = match.end()
+    if insert_pos < len(template_content) and template_content[insert_pos] == '\n':
+        return template_content[:insert_pos + 1] + new_key_value + line_ending + template_content[insert_pos + 1:]
+    return template_content[:insert_pos] + line_ending + new_key_value + template_content[insert_pos:]
 
 
 def _inject_surge_proxies(template_content: str, proxy_lines: List[str]) -> str:
@@ -712,26 +811,39 @@ def get_unique_singbox_tag(name: Any, used_tags: Set[str], index: int) -> str:
     return tag
 
 
-def get_singbox_tls(proxy: Dict[str, Any], required: bool = False, allow_utls: bool = True) -> Optional[Dict[str, Any]]:
+def get_singbox_tls(
+    proxy: Dict[str, Any],
+    required: bool = False,
+    allow_utls: bool = True,
+    force_insecure: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Generate Sing-Box TLS configuration object."""
     reality = proxy.get('reality-opts') or {}
+    public_key = reality.get('public-key')
     enabled = required or bool(proxy.get('tls')) or bool(reality)
     if not enabled:
         return None
-    tls = {
+    if public_key:
+        insecure = False
+    elif force_insecure:
+        insecure = True
+    else:
+        insecure = bool(proxy.get('skip-cert-verify'))
+    tls: Dict[str, Any] = {
         'enabled': True,
-        'insecure': bool(proxy.get('skip-cert-verify')),
+        'insecure': insecure,
     }
     server_name = proxy.get('servername') or proxy.get('sni')
     if server_name:
         tls['server_name'] = server_name
-    fingerprint = proxy.get('client-fingerprint')
-    if allow_utls and fingerprint:
+    fingerprint = str(proxy.get('client-fingerprint') or '').strip()
+    if public_key and (not fingerprint or fingerprint.lower() == 'none'):
+        fingerprint = 'firefox'
+    if allow_utls and fingerprint and fingerprint.lower() != 'none':
         tls['utls'] = {
             'enabled': True,
             'fingerprint': fingerprint,
         }
-    public_key = reality.get('public-key')
     if public_key:
         tls['reality'] = {
             'enabled': True,
@@ -747,15 +859,40 @@ def get_singbox_tls(proxy: Dict[str, Any], required: bool = False, allow_utls: b
 def get_singbox_transport(proxy: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Generate Sing-Box transport configuration object."""
     network = str(proxy.get('network') or '').lower()
-    if network == 'ws':
+    if network in ('ws', 'httpupgrade'):
         options = proxy.get('ws-opts') or {}
+        is_httpupgrade = network == 'httpupgrade' or bool(options.get('v2ray-http-upgrade'))
+        headers = options.get('headers') if isinstance(options.get('headers'), dict) else {}
+        if is_httpupgrade:
+            transport: Dict[str, Any] = {
+                'type': 'httpupgrade',
+                'path': options.get('path') or '/',
+            }
+            host = next((v for k, v in headers.items() if str(k).lower() == 'host' and v), None)
+            if host:
+                transport['host'] = str(host)
+            other_headers = {k: v for k, v in headers.items() if str(k).lower() != 'host' and v}
+            if other_headers:
+                transport['headers'] = other_headers
+            return transport
         transport = {
             'type': 'ws',
             'path': options.get('path') or '/',
         }
-        headers = options.get('headers')
         if headers:
             transport['headers'] = headers
+        return transport
+    if network in ('h2', 'http'):
+        options = proxy.get('h2-opts') or proxy.get('http-opts') or {}
+        transport = {
+            'type': 'http',
+            'path': options.get('path') or '/',
+        }
+        host = options.get('host')
+        if isinstance(host, list) and host:
+            transport['host'] = [str(h) for h in host if h]
+        elif isinstance(host, str) and host.strip():
+            transport['host'] = [host.strip()]
         return transport
     if network == 'grpc':
         options = proxy.get('grpc-opts') or {}
@@ -809,41 +946,27 @@ def _parse_hop_interval_bounds(value: Any) -> Tuple[Optional[int], Optional[int]
 
 
 def get_singbox_bandwidth(value: Any) -> Optional[int]:
-    """Parse bandwidth string into positive integer Mbps, converting common units (K/M/G/T, b/B)."""
+    """Parse bandwidth string into positive integer Mbps, converting K/M/G/T, b/B, ps and /s accurately."""
     if value in (None, ''):
         return None
-    raw = str(value).strip()
-    match = re.match(r'^(\d+(?:\.\d+)?)\s*([kmgt]?)([b]?)(?:ps)?$', raw, re.IGNORECASE)
-    if not match:
-        fallback = re.search(r'\d+(?:\.\d+)?', raw)
-        if not fallback:
-            return None
-        mbps = int(float(fallback.group()))
-        return mbps if mbps > 0 else None
-    val = float(match.group(1))
-    if val <= 0:
+    mbps_val = parse_bandwidth_to_mbps(value)
+    if mbps_val is None:
         return None
-    prefix = match.group(2).upper()
-    bit_or_byte = match.group(3)
-    scale = {
-        '': 1.0,
-        'M': 1.0,
-        'K': 0.001,
-        'G': 1000.0,
-        'T': 1000000.0,
-    }[prefix]
-    if bit_or_byte == 'B':
-        scale *= 8.0
-    mbps = int(round(val * scale))
+    mbps = int(round(mbps_val))
     return mbps if mbps > 0 else None
 
 
-def get_singbox_outbound(proxy_type: str, proxy: Dict[str, Any], tag: str) -> Dict[str, Any]:
+def get_singbox_outbound(
+    proxy_type: str,
+    proxy: Dict[str, Any],
+    tag: str,
+    legacy_format: bool = False,
+    hy2_pin_fallback: Optional[bool] = None,
+) -> Dict[str, Any]:
     """Build Sing-Box outbound configuration dictionary for a given node."""
+    _validate_proxy_outbound(proxy_type, proxy)
     server = proxy.get('server')
     port = proxy.get('port')
-    if not server or port in (None, ''):
-        raise ValueError('节点缺少服务器地址或端口')
     common = {
         'tag': tag,
         'server': server,
@@ -858,10 +981,14 @@ def get_singbox_outbound(proxy_type: str, proxy: Dict[str, Any], tag: str) -> Di
             **common,
             'uuid': proxy.get('uuid'),
         }
-        if proxy.get('flow'):
-            outbound['flow'] = proxy.get('flow')
-        tls = get_singbox_tls(proxy)
         transport = get_singbox_transport(proxy)
+        network = str(proxy.get('network') or '').strip().lower()
+        raw_flow = str(proxy.get('flow') or '').strip().lower()
+        if raw_flow == 'xtls-rprx-vision-udp443':
+            raw_flow = 'xtls-rprx-vision'
+        if raw_flow and raw_flow != 'none' and not transport and network in ('', 'tcp', 'raw'):
+            outbound['flow'] = raw_flow
+        tls = get_singbox_tls(proxy)
         if tls:
             outbound['tls'] = tls
         if transport:
@@ -987,20 +1114,44 @@ def get_singbox_outbound(proxy_type: str, proxy: Dict[str, Any], tag: str) -> Di
         return outbound
 
     if proxy_type in ('hy2', 'hysteria2'):
+        has_cert_pin = bool(str(proxy.get('fingerprint') or '').strip())
+        allow_pin_fallback = (
+            bool(get_runtime_config().get('hy2_pin_fallback', False))
+            if hy2_pin_fallback is None
+            else bool(hy2_pin_fallback)
+        )
+        force_insecure = has_cert_pin and allow_pin_fallback
+        if has_cert_pin and not proxy.get('skip-cert-verify'):
+            if allow_pin_fallback:
+                logger.warning(
+                    'sing-box 暂不支持 Hysteria2 pinSHA256 整证书指纹校验，已按显式开关将节点 %s 的 tls.insecure 设为 true',
+                    tag,
+                )
+            else:
+                logger.info(
+                    'sing-box 暂不支持 Hysteria2 pinSHA256 整证书指纹校验，节点 %s 保持 tls.insecure=false（如需兼容可在全局设置开启或附加 ?hy2_pin_fallback=1）',
+                    tag,
+                )
         outbound = {
             'type': 'hysteria2',
             **common,
             'password': proxy.get('password') or proxy.get('auth'),
-            'tls': get_singbox_tls(proxy, required=True, allow_utls=False),
+            'tls': get_singbox_tls(
+                proxy,
+                required=True,
+                allow_utls=False,
+                force_insecure=force_insecure,
+            ),
         }
         server_ports = _format_singbox_server_ports(proxy.get('ports'))
         if server_ports:
+            outbound.pop('server_port', None)
             outbound['server_ports'] = server_ports
             hop_min, hop_max = _parse_hop_interval_bounds(proxy.get('hop-interval'))
             if hop_min:
                 hop_min = max(5, hop_min)
                 outbound['hop_interval'] = f'{hop_min}s'
-                if hop_max and hop_max > hop_min:
+                if not legacy_format and hop_max and hop_max > hop_min:
                     outbound['hop_interval_max'] = f'{hop_max}s'
         up_mbps = get_singbox_bandwidth(proxy.get('up'))
         down_mbps = get_singbox_bandwidth(proxy.get('down'))
@@ -1010,6 +1161,8 @@ def get_singbox_outbound(proxy_type: str, proxy: Dict[str, Any], tag: str) -> Di
             outbound['down_mbps'] = down_mbps
         obfs_type = str(proxy.get('obfs') or '').strip().lower()
         if obfs_type in ('salamander', 'gecko') and proxy.get('obfs-password'):
+            if legacy_format and obfs_type == 'gecko':
+                raise ValueError('sing-box 1.12-1.13 (?legacy=1) 不支持 Hysteria2 gecko 混淆')
             obfs_obj: Dict[str, Any] = {
                 'type': obfs_type,
                 'password': proxy.get('obfs-password'),
@@ -1032,11 +1185,27 @@ def get_singbox_outbound(proxy_type: str, proxy: Dict[str, Any], tag: str) -> Di
     raise ValueError(f'不支持的节点类型: {proxy_type}')
 
 
-def _get_singbox_outbound(proxy_type: str, proxy: Dict[str, Any], tag: str) -> Dict[str, Any]:
+def _get_singbox_outbound(
+    proxy_type: str,
+    proxy: Dict[str, Any],
+    tag: str,
+    legacy_format: bool = False,
+    hy2_pin_fallback: Optional[bool] = None,
+) -> Dict[str, Any]:
     view_mod = sys.modules.get('app.view')
     if view_mod and hasattr(view_mod, 'get_singbox_outbound') and view_mod.get_singbox_outbound is not get_singbox_outbound:
-        return view_mod.get_singbox_outbound(proxy_type, proxy, tag)
-    return get_singbox_outbound(proxy_type, proxy, tag)
+        try:
+            return view_mod.get_singbox_outbound(
+                proxy_type, proxy, tag, legacy_format=legacy_format, hy2_pin_fallback=hy2_pin_fallback
+            )
+        except TypeError:
+            try:
+                return view_mod.get_singbox_outbound(proxy_type, proxy, tag, legacy_format=legacy_format)
+            except TypeError:
+                return view_mod.get_singbox_outbound(proxy_type, proxy, tag)
+    return get_singbox_outbound(
+        proxy_type, proxy, tag, legacy_format=legacy_format, hy2_pin_fallback=hy2_pin_fallback
+    )
 
 
 def parse_singbox_node(proxy_type: str, node: str) -> Dict[str, Any]:
@@ -1190,7 +1359,11 @@ def convert_singbox_to_legacy_options(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def singbox_encode(subs: Any, legacy_format: bool = False) -> str:
+def singbox_encode(
+    subs: Any,
+    legacy_format: bool = False,
+    hy2_pin_fallback: Optional[bool] = None,
+) -> str:
     """Generate Sing-Box subscription configuration with flat early-return control flow."""
     data = _load_singbox_template()
     if legacy_format:
@@ -1216,13 +1389,23 @@ def singbox_encode(subs: Any, legacy_format: bool = False) -> str:
         if proxy_type not in singbox_node_types:
             logger.info('sing-box跳过不支持的节点类型: %s', proxy_type)
             continue
+        tag = None
         try:
             proxy = _parse_singbox_node(proxy_type, raw_node)
             raw_name = str(proxy.get('name') or '').strip() or fallback_remark
             tag = get_unique_singbox_tag(raw_name, used_tags, len(node_tags) + 1)
-            node_outbounds.append(_get_singbox_outbound(proxy_type, proxy, tag))
+            outbound = _get_singbox_outbound(
+                proxy_type,
+                proxy,
+                tag,
+                legacy_format=legacy_format,
+                hy2_pin_fallback=hy2_pin_fallback,
+            )
+            node_outbounds.append(outbound)
             node_tags.append(tag)
         except Exception as e:
+            if tag is not None:
+                used_tags.discard(tag)
             logger.warning('sing-box节点解析失败，类型: %s 节点: %s 错误信息: %s', proxy_type, redact_uri_credentials(raw_node), e)
 
     replacements = node_tags or ['direct']

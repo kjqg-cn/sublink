@@ -14,9 +14,25 @@ const PADDING_Y = 16 // 上下各 8px
 const themeVars = useThemeVars()
 const gutter = ref<HTMLDivElement | null>(null)
 
-// 行号根据内容行数生成，至少铺满可视高度。
-const lineCount = computed(() => Math.max(props.modelValue.split('\n').length, 1))
-const lines = computed(() => Array.from({ length: lineCount.value }, (_, i) => i + 1))
+// 线性扫描换行符统计行数，避免每次按键分配大数组。
+const lineCount = computed(() => {
+  const text = props.modelValue
+  let count = 1
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) count++
+  }
+  return count
+})
+
+// 仅当行数变化时重建行号文本，将数千个行号 DOM 节点降为单个文本节点。
+const gutterText = computed(() => {
+  const n = lineCount.value
+  const parts = new Array<string>(n)
+  for (let i = 0; i < n; i++) {
+    parts[i] = String(i + 1)
+  }
+  return parts.join('\n')
+})
 
 // 容器固定高度（由 rows 决定），超出内容由文本域内部滚动。
 const boxHeight = computed(() => `${props.rows * LINE_HEIGHT + PADDING_Y}px`)
@@ -43,9 +59,7 @@ function onScroll(e: Event) {
 
 <template>
   <div class="code-textarea" :style="wrapVars">
-    <div ref="gutter" class="gutter">
-      <div v-for="n in lines" :key="n" class="gutter-line">{{ n }}</div>
-    </div>
+    <div ref="gutter" class="gutter">{{ gutterText }}</div>
     <textarea
       class="editor"
       :value="modelValue"
@@ -85,15 +99,13 @@ function onScroll(e: Event) {
   font-size: 13px;
   height: 100%;
   line-height: 1.6;
+  min-width: 40px;
   overflow: hidden;
   /* 底部预留横向滚动条高度，防止滚至末行时行号与代码错位 */
   padding: 8px 8px 24px 10px;
   text-align: right;
   user-select: none;
-}
-
-.gutter-line {
-  min-width: 22px;
+  white-space: pre;
 }
 
 .editor {

@@ -23,6 +23,7 @@ cd web
 npm ci
 npm run build
 # 如需前端热更新开发调试，运行 npm run dev（访问 http://localhost:5174）
+# 如需运行前端单元测试（Vitest），运行 npm test
 
 # 2. 安装 Python 依赖、初始化/迁移数据库并启动后端
 cd ..
@@ -78,6 +79,7 @@ http://服务器地址/sub/sing-box/<token>
 sing-box 地址默认输出面向 **sing-box 1.14+** 的远程 Profile（使用 `http_clients` 与 `route.default_http_client`），包含 TUN、DNS、手动选择、自动测速，以及中国大陆和局域网直连规则。支持转换 `vless`、`vmess`、`ss`、`trojan`、`hysteria` 和 `hysteria2` 节点；`SSR` 节点不在 sing-box 支持范围内。
 
 - 若使用 **sing-box 1.12 ～ 1.13** 等旧版内核客户端，可在后台「订阅地址」卡片切换至 `sing-box` 后直接勾选 **`1.12～1.13 兼容 (?legacy=1)`**（或手动在订阅地址末尾附加 `?legacy=1` / `?version=1.12`），服务端将自动兼容输出旧版 `download_detour` 字段。
+- 若订阅中包含带 `pinSHA256` 整证书指纹的 **Hysteria2** 节点：由于 sing-box 稳定版暂不支持整证书指纹校验，默认保持 `tls.insecure: false`（安全优先）；如需兼容，可在后台「全局设置」开启 **「sing-box 兼容 Hysteria2 指纹节点」**，或在对应订阅链接末尾按需附加 `?hy2_pin_fallback=1`（覆盖开启）/ `?hy2_pin_fallback=0`（覆盖关闭）。
 
 - Token 地址不会因为修改订阅名称而变化
 - 客户端默认显示名称为 `v3订阅`
@@ -163,8 +165,11 @@ docker compose up -d --build
 ```bash
 docker ps --filter name=sublink-v3
 docker logs --tail 100 sublink-v3
+curl -s http://127.0.0.1:8000/healthz
 curl -I http://127.0.0.1:8000
 ```
+
+其中 `GET /healthz` 返回 `{"status":"ok"}`，同时用作 Docker 容器内置 `HEALTHCHECK` 探针。
 
 浏览器访问：
 
@@ -198,6 +203,7 @@ systemctl reload nginx
 | --- | --- | --- |
 | `PORT` | `5000`（Compose 为 `8000`） | 服务监听端口 |
 | `WORKERS` | `4` | Gunicorn Worker 进程数 |
+| `GUNICORN_TIMEOUT` | `120` | Gunicorn Worker 请求超时时间（秒），避免多个远程订阅与国旗查询叠加时被误杀 |
 | `JWT_SECRET_KEY` | 自动生成 | JWT 签名密钥（建议 ≥ 32 字节）；未设置时自动持久化至 `app/db/.jwt_secret` |
 | `TRUSTED_PROXIES` | 空 | 可信反向代理 IP/CIDR 列表（逗号分隔，如 `127.0.0.1,172.16.0.0/12`） |
 | `TRUSTED_PROXY_COUNT` | `0` | 经过的反向代理层数（需配合 `TRUSTED_PROXIES` 或仅内网监听使用） |

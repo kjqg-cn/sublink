@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage, NCard, NInput, NButton, NForm, NFormItem } from 'naive-ui'
-import { createSub } from '@/api'
+import { createSub, validateSubName } from '@/api'
 import CodeTextarea from '@/components/CodeTextarea.vue'
 import { DRAFT_NODES_STORAGE_KEY, storageGet, storageRemove } from '@/utils/storage'
 
@@ -26,6 +26,11 @@ async function handleCreate() {
   const createdName = name.value.trim()
   if (!createdName || !sub.value.trim()) {
     message.warning('请填写订阅名称和节点')
+    return
+  }
+  const nameErr = validateSubName(createdName)
+  if (nameErr) {
+    message.warning(nameErr)
     return
   }
   saving.value = true

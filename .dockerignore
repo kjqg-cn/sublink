@@ -5,6 +5,7 @@ box.sh
 build.sh
 local_docs
 readme
+review
 tests
 .git
 .venv

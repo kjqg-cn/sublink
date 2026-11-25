@@ -37,7 +37,7 @@ def parse_vless(proxy_test: str) -> Dict[str, Any]:
     """Parse VLESS node URI into proxy dictionary."""
     parse = urllib.parse.urlparse(proxy_test)
     raw_query = urllib.parse.parse_qs(parse.query)
-    query = {k: v[0] for k, v in raw_query.items()}
+    query = {k.lower(): v[0] for k, v in raw_query.items() if v}
 
     uuid, server_port = _extract_userinfo_host(parse)
 
@@ -46,6 +46,11 @@ def parse_vless(proxy_test: str) -> Dict[str, Any]:
     cfg = get_runtime_config()
     if cfg.get('emoji'):
         proxy_name = (_get_country_emoji(server) or '') + (proxy_name or '')
+
+    security = str(query.get('security') or '').strip().lower()
+    is_reality = security == 'reality'
+    raw_network = str(query.get('type') or '').strip().lower()
+    network = 'tcp' if raw_network == 'raw' else raw_network
 
     proxy: Dict[str, Any] = {
         'name': proxy_name,
@@ -57,43 +62,77 @@ def parse_vless(proxy_test: str) -> Dict[str, Any]:
         'udp': cfg.get('udp', config_manager.Udp),
         'skip-cert-verify': cfg.get('skipcert', config_manager.SkipCert),
         'tfo': False,
-        'tls': str(query.get('security') or '').strip().lower() not in ('', 'none', 'false', '0'),
+        'tls': security not in ('', 'none', 'false', '0'),
     }
-    network = query.get('type')
     if network:
         proxy['network'] = network
 
-    if query.get('fp'):
-        proxy['client-fingerprint'] = query.get('fp')
+    fp = str(query.get('fp') or '').strip()
+    if is_reality:
+        if not fp or fp.lower() == 'none':
+            proxy['client-fingerprint'] = 'firefox'
+        else:
+            proxy['client-fingerprint'] = fp
+    else:
+        if fp.lower() == 'none':
+            proxy.pop('client-fingerprint', None)
+        elif fp:
+            proxy['client-fingerprint'] = fp
+
     if query.get('sni'):
         proxy['servername'] = query.get('sni')
     if query.get('alpn'):
-        proxy['alpn'] = [item for item in query.get('alpn').split(',') if item]
-    if query.get('flow'):
-        proxy['flow'] = query.get('flow')
-    if str(query.get('security') or '').strip().lower() == 'reality':
-        public_key = (query.get('pbk') or '').strip() or (query.get('publicKey') or '').strip()
+        alpn_list = [item.strip() for item in query['alpn'].split(',') if item.strip()]
+        if alpn_list:
+            proxy['alpn'] = alpn_list
+
+    raw_flow = str(query.get('flow') or '').strip().lower()
+    if raw_flow == 'xtls-rprx-vision-udp443':
+        raw_flow = 'xtls-rprx-vision'
+    if raw_flow and raw_flow != 'none' and network in ('', 'tcp'):
+        proxy['flow'] = raw_flow
+
+    if is_reality:
+        public_key = (query.get('pbk') or '').strip() or (query.get('publickey') or '').strip()
         if public_key:
             reality_opts: Dict[str, Any] = {'public-key': public_key}
-            sid = (query.get('sid') or '').strip() or (query.get('shortId') or '').strip()
+            sid = (query.get('sid') or '').strip() or (query.get('shortid') or '').strip()
             if sid:
                 reality_opts['short-id'] = sid
             proxy['reality-opts'] = reality_opts
-    if network == 'ws':
-        proxy['ws-opts'] = {
+    if network in ('ws', 'httpupgrade'):
+        ws_opts: Dict[str, Any] = {
             'path': query.get('path') or '/'
         }
         host = query.get('host')
         if host:
-            proxy['ws-opts']['headers'] = {'Host': host}
+            ws_opts['headers'] = {'Host': host}
+        if network == 'httpupgrade':
+            proxy['network'] = 'ws'
+            ws_opts['v2ray-http-upgrade'] = True
+        proxy['ws-opts'] = ws_opts
+    if network in ('h2', 'http'):
+        proxy['network'] = 'h2'
+        h2_opts: Dict[str, Any] = {
+            'path': query.get('path') or '/'
+        }
+        host = query.get('host')
+        if host:
+            host_list = [item.strip() for item in host.split(',') if item.strip()]
+            if host_list:
+                h2_opts['host'] = host_list
+        proxy['h2-opts'] = h2_opts
     if network == 'grpc':
         proxy['grpc-opts'] = {
-            'grpc-service-name': query.get('serviceName') or query.get('service-name') or ''
+            'grpc-service-name': query.get('servicename') or query.get('service-name') or ''
         }
-    if str(query.get('insecure') or query.get('allowInsecure') or '').lower() in ('1', 'true'):
+    if str(query.get('insecure') or query.get('allowinsecure') or '').lower() in ('1', 'true'):
         proxy['skip-cert-verify'] = True
     if query.get('cert'):
-        proxy['skip-cert-verify'] = query.get('cert').lower() == 'true'
+        proxy['skip-cert-verify'] = query['cert'].lower() == 'true'
+    if proxy.get('reality-opts'):
+        # REALITY authenticates via server public key rather than CA chain; keep Clash & sing-box consistent.
+        proxy['skip-cert-verify'] = False
 
     return proxy
 
@@ -107,7 +146,7 @@ def parse_vmess(proxy_test: str) -> Dict[str, Any]:
 
     if parse.query != '':
         raw_query = urllib.parse.parse_qs(parse.query)
-        query = {k: v[0] for k, v in raw_query.items()}
+        query = {k.lower(): v[0] for k, v in raw_query.items() if v}
         info = parse.netloc if '@' in parse.netloc else decode_base64_if(parse.netloc)
         name = query.get('remarks') or urllib.parse.unquote(parse.fragment) or ''
         if '@' in info:
@@ -123,31 +162,40 @@ def parse_vmess(proxy_test: str) -> Dict[str, Any]:
         if not cipher:
             cipher = 'auto'
         server, port = parse_server_port(server_port, default_port=443)
-        aid = int(query.get('alterId') or 0)
-        network = 'ws' if query.get('obfs') == 'websocket' else (query.get('net') or query.get('type') or '')
+        aid = int(query.get('alterid') or 0)
+        raw_net = 'ws' if str(query.get('obfs') or '').lower() == 'websocket' else (query.get('net') or query.get('type') or '')
+        network = str(raw_net).strip().lower()
         if network == 'none':
             network = ''
+        elif network == 'raw':
+            network = 'tcp'
         tls = query.get('tls')
         path_a = query.get('path')
-        host = query.get('obfsParam') or query.get('host')
+        host = query.get('obfsparam') or query.get('host')
         sni = query.get('sni') or query.get('peer')
         fingerprint = query.get('fp')
         alpn = query.get('alpn')
-        grpc_service_name = query.get('serviceName') or query.get('service-name') or path_a
+        grpc_service_name = query.get('servicename') or query.get('service-name') or path_a
         if cfg.get('emoji'):
             name = (_get_country_emoji(server) or '') + (name or '')
         cert = query.get('cert')
-        insecure = query.get('insecure') or query.get('allowInsecure') or query.get('allowinsecure')
+        insecure = query.get('insecure') or query.get('allowinsecure')
     else:
         info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
         proxy = json.loads(decode_base64_if(info))
         name = proxy.get('ps') or ''
         uuid = proxy.get('id')
         server = proxy.get('add')
-        port = int(proxy.get('port') or 443)
-        aid = int(proxy.get('aid') or 0)
+        raw_port = proxy.get('port')
+        if isinstance(raw_port, bool):
+            port: Any = raw_port
+        else:
+            port = int(raw_port) if raw_port not in (None, '') else 443
+        raw_aid = proxy.get('aid')
+        aid = 0 if isinstance(raw_aid, bool) else int(raw_aid or 0)
         cipher = proxy.get('scy') if proxy.get('scy') else 'auto'
-        network = proxy.get('net') or ''
+        raw_net = str(proxy.get('net') or '').strip().lower()
+        network = 'tcp' if raw_net == 'raw' else raw_net
         tls = proxy.get('tls')
         path_a = proxy.get('path')
         host = proxy.get('host')
@@ -190,14 +238,28 @@ def parse_vmess(proxy_test: str) -> Dict[str, Any]:
     if cert is not None and str(cert).strip() != '':
         proxys['skip-cert-verify'] = str(cert).strip().lower() == 'true'
 
-    if network == 'ws':
-        proxys['ws-opts'] = {
+    if network in ('ws', 'httpupgrade'):
+        ws_opts: Dict[str, Any] = {
             'path': path_a or '/',
         }
         if host is not None and host != '':
-            proxys['ws-opts']['headers'] = {
+            ws_opts['headers'] = {
                 'Host': host
             }
+        if network == 'httpupgrade':
+            proxys['network'] = 'ws'
+            ws_opts['v2ray-http-upgrade'] = True
+        proxys['ws-opts'] = ws_opts
+    if network in ('h2', 'http'):
+        proxys['network'] = 'h2'
+        h2_opts: Dict[str, Any] = {
+            'path': path_a or '/',
+        }
+        if host is not None and str(host).strip() != '':
+            host_list = [item.strip() for item in str(host).split(',') if item.strip()]
+            if host_list:
+                h2_opts['host'] = host_list
+        proxys['h2-opts'] = h2_opts
     if network == 'grpc':
         proxys['grpc-opts'] = {
             'grpc-service-name': grpc_service_name or ''
@@ -316,7 +378,7 @@ def parse_ss(proxy_test: str) -> Dict[str, Any]:
     parse = urllib.parse.urlparse(proxy_test)
     info = parse.netloc or (parse.path if parse.path != '/' else '')
     raw_query = urllib.parse.parse_qs(parse.query)
-    query = {k: v[0] for k, v in raw_query.items()}
+    query = {k.lower(): v[0] for k, v in raw_query.items() if v}
     name = urllib.parse.unquote(parse.fragment)
     if '@' in info:
         userinfo_raw, _, server_port = info.rpartition('@')
@@ -373,12 +435,12 @@ def parse_ssr(proxy_test: str) -> Dict[str, Any]:
     parse = urllib.parse.urlparse(proxy_test)
     info = parse.netloc + parse.path if parse.path != '/' else parse.netloc
     urlpath = decode_base64_if(info)
-    query = urllib.parse.parse_qs(parse.query)
+    query = {k.lower(): v for k, v in urllib.parse.parse_qs(parse.query).items()}
     if urlpath.startswith('[') and ']:' in urlpath:
         server_part, _, rest = urlpath[1:].partition(']:')
         server = if_ipv6_address(server_part)
         parts = rest.split(':')
-        port = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 443
+        port = int(parts[0]) if len(parts) > 0 and re.fullmatch(r'-?\d+', parts[0]) else 443
         protocol = parts[1] if len(parts) > 1 else 'origin'
         cipher = parts[2] if len(parts) > 2 else 'none'
         obfs = parts[3] if len(parts) > 3 else 'plain'
@@ -386,14 +448,14 @@ def parse_ssr(proxy_test: str) -> Dict[str, Any]:
     else:
         parts = urlpath.split(':')
         server = if_ipv6_address(parts[0])
-        port = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 443
+        port = int(parts[1]) if len(parts) > 1 and re.fullmatch(r'-?\d+', parts[1]) else 443
         protocol = parts[2] if len(parts) > 2 else 'origin'
         cipher = parts[3] if len(parts) > 3 else 'none'
         obfs = parts[4] if len(parts) > 4 else 'plain'
         password_part = ':'.join(parts[5:]) if len(parts) > 5 else ''
     parse2 = urllib.parse.urlparse(password_part)
     password = decode_base64_if(parse2.path.rstrip('/'))
-    query2 = urllib.parse.parse_qs(parse2.query)
+    query2 = {k.lower(): v for k, v in urllib.parse.parse_qs(parse2.query).items()}
     name = ''
     if query.get('remarks'):
         name = decode_base64_if(query.get('remarks')[0].replace(' ', '+'))
@@ -428,7 +490,7 @@ def parse_ssr(proxy_test: str) -> Dict[str, Any]:
         proxy['obfs-param'] = obfs_param
     if proto_param:
         proxy['protocol-param'] = proto_param
-    insecure_vals = query.get('insecure') or query.get('allowInsecure') or query2.get('insecure') or query2.get('allowInsecure')
+    insecure_vals = query.get('insecure') or query.get('allowinsecure') or query2.get('insecure') or query2.get('allowinsecure')
     if insecure_vals and str(insecure_vals[0]).strip().lower() in ('1', 'true'):
         proxy['skip-cert-verify'] = True
     cert_vals = query.get('cert') or query2.get('cert')
@@ -443,7 +505,7 @@ def parse_trojan(proxy_test: str) -> Dict[str, Any]:
     password, server_port = _extract_userinfo_host(parse)
     name = urllib.parse.unquote(parse.fragment)
     raw_query = urllib.parse.parse_qs(parse.query)
-    query = {k: v[0] for k, v in raw_query.items()}
+    query = {k.lower(): v[0] for k, v in raw_query.items() if v}
     server, port = parse_server_port(server_port, default_port=443)
     cfg = get_runtime_config()
     if cfg.get('emoji'):
@@ -466,23 +528,40 @@ def parse_trojan(proxy_test: str) -> Dict[str, Any]:
         proxy['alpn'] = [item for item in query.get('alpn').split(',') if item]
     if query.get('flow'):
         proxy['flow'] = query.get('flow')
-    if query.get('type') in ('ws', 'grpc'):
-        proxy['network'] = query.get('type')
-    if query.get('type') == 'ws':
-        proxy['ws-opts'] = {
+    raw_network = str(query.get('type') or '').strip().lower()
+    network = 'tcp' if raw_network == 'raw' else raw_network
+    if network and network not in ('none', 'tcp'):
+        proxy['network'] = network
+    if network in ('ws', 'httpupgrade'):
+        ws_opts: Dict[str, Any] = {
             'path': query.get('path') or '/'
         }
         host = query.get('host')
         if host:
-            proxy['ws-opts']['headers'] = {'Host': host}
-    if query.get('type') == 'grpc':
-        proxy['grpc-opts'] = {
-            'grpc-service-name': query.get('serviceName') or query.get('service-name') or ''
+            ws_opts['headers'] = {'Host': host}
+        if network == 'httpupgrade':
+            proxy['network'] = 'ws'
+            ws_opts['v2ray-http-upgrade'] = True
+        proxy['ws-opts'] = ws_opts
+    if network in ('h2', 'http'):
+        proxy['network'] = 'h2'
+        h2_opts: Dict[str, Any] = {
+            'path': query.get('path') or '/'
         }
-    if str(query.get('insecure') or query.get('allowInsecure') or '').lower() in ('1', 'true'):
+        host = query.get('host')
+        if host:
+            host_list = [item.strip() for item in host.split(',') if item.strip()]
+            if host_list:
+                h2_opts['host'] = host_list
+        proxy['h2-opts'] = h2_opts
+    if network == 'grpc':
+        proxy['grpc-opts'] = {
+            'grpc-service-name': query.get('servicename') or query.get('service-name') or ''
+        }
+    if str(query.get('insecure') or query.get('allowinsecure') or '').lower() in ('1', 'true'):
         proxy['skip-cert-verify'] = True
     if query.get('cert'):
-        proxy['skip-cert-verify'] = query.get('cert').lower() == 'true'
+        proxy['skip-cert-verify'] = query['cert'].lower() == 'true'
     return proxy
 
 
@@ -492,7 +571,7 @@ def parse_hysteria(proxy_test: str) -> Dict[str, Any]:
     auth_str, server_port = _extract_userinfo_host(parse)
     name = urllib.parse.unquote(parse.fragment)
     raw_query = urllib.parse.parse_qs(parse.query)
-    query = {k: v[0] for k, v in raw_query.items()}
+    query = {k.lower(): v[0] for k, v in raw_query.items() if v}
     server, port = parse_server_port(server_port, default_port=443)
     cfg = get_runtime_config()
     if cfg.get('emoji'):
@@ -520,10 +599,10 @@ def parse_hysteria(proxy_test: str) -> Dict[str, Any]:
         proxy['sni'] = query.get('peer') or query.get('sni')
     if query.get('obfs'):
         proxy['obfs'] = query.get('obfs')
-    if str(query.get('insecure') or '').lower() in ('1', 'true'):
+    if str(query.get('insecure') or query.get('allowinsecure') or '').lower() in ('1', 'true'):
         proxy['skip-cert-verify'] = True
     if query.get('cert'):
-        proxy['skip-cert-verify'] = query.get('cert').lower() == 'true'
+        proxy['skip-cert-verify'] = query['cert'].lower() == 'true'
     return proxy
 
 
@@ -617,7 +696,18 @@ _HY2_GECKO_DEFAULT_MIN_PKT = 512
 _HY2_GECKO_DEFAULT_MAX_PKT = 1200
 _HY2_GECKO_MAX_WIRE_SIZE = 2048
 _HEX64_RE = re.compile(r'^[0-9a-f]{64}$')
-_BANDWIDTH_RE = re.compile(r'^(\d+(?:\.\d+)?)\s*([kmgt]?)([b]?)(?:ps)?$', re.IGNORECASE)
+# Supports bare numbers (default Mbps), K/M/G/T + b/B + ps or /s (e.g. '100', '50mbps', '0.5 Gbps', '100 MB/s', '100 bps')
+_BANDWIDTH_RE = re.compile(
+    r'^(\d+(?:\.\d+)?)\s*(?:([kmgtKMGT]?)([bB])(?:ps|PS|/s|/S)|([kmgtKMGT])([bB]?))?$'
+)
+_BW_PREFIX_ORDER = ('T', 'G', 'M', 'K', '')
+_BW_PREFIX_MBPS_SCALE = {
+    '': 1e-6,
+    'K': 1e-3,
+    'M': 1.0,
+    'G': 1e3,
+    'T': 1e6,
+}
 
 
 def _normalize_pin_sha256(value: Any) -> str:
@@ -629,8 +719,8 @@ def _normalize_pin_sha256(value: Any) -> str:
     return cleaned if _HEX64_RE.match(cleaned) else ''
 
 
-def _normalize_hysteria2_bandwidth(value: Any) -> Optional[str]:
-    """Normalize bandwidth string for Mihomo (case-sensitive unit) and downstream parsers."""
+def _parse_bandwidth_parts(value: Any) -> Optional[Tuple[float, str, str]]:
+    """Parse bandwidth string into (numeric_value, prefix in ''/'K'/'M'/'G'/'T', unit_b in 'b'/'B')."""
     raw = str(value or '').strip()
     if not raw:
         return None
@@ -640,16 +730,48 @@ def _normalize_hysteria2_bandwidth(value: Any) -> Optional[str]:
     num_val = float(m.group(1))
     if num_val <= 0:
         return None
-    prefix = m.group(2).upper()
-    bit_or_byte = m.group(3)  # preserve 'B' (bytes) vs 'b' (bits) when specified
-    if not prefix and not bit_or_byte:
-        mbps = int(round(num_val))
-        return str(mbps) if mbps > 0 else None
-    unit_b = 'B' if bit_or_byte == 'B' else 'b'
+    if m.group(3):
+        prefix = (m.group(2) or '').upper()
+        unit_b = 'B' if m.group(3) == 'B' else 'b'
+    elif m.group(4):
+        prefix = m.group(4).upper()
+        unit_b = 'B' if m.group(5) == 'B' else 'b'
+    else:
+        # Bare numeric input without any unit defaults to Mbps
+        prefix = 'M'
+        unit_b = 'b'
+    return num_val, prefix, unit_b
+
+
+def parse_bandwidth_to_mbps(value: Any) -> Optional[float]:
+    """Convert bandwidth string to exact floating-point Mbps (None if empty/invalid/<=0)."""
+    parts = _parse_bandwidth_parts(value)
+    if parts is None:
+        return None
+    num_val, prefix, unit_b = parts
+    scale = _BW_PREFIX_MBPS_SCALE[prefix]
+    if unit_b == 'B':
+        scale *= 8.0
+    mbps = num_val * scale
+    return mbps if mbps > 0 else None
+
+
+def _normalize_hysteria2_bandwidth(value: Any) -> Optional[str]:
+    """Normalize bandwidth string to Mihomo-compatible integer + case-sensitive unit (stepping down fractional values)."""
+    parts = _parse_bandwidth_parts(value)
+    if parts is None:
+        return None
+    num_val, prefix, unit_b = parts
+    idx = _BW_PREFIX_ORDER.index(prefix)
+    # Mihomo StringToBps only parses integer magnitudes (`^\d+\s*[KMGT]?[Bb]ps$`);
+    # step fractional values (e.g. 0.5 Gbps, 1.5 Gbps, 0.5 Mbps) down to a finer prefix without rounding loss.
+    while idx < len(_BW_PREFIX_ORDER) - 1 and abs(num_val - round(num_val)) > 1e-9:
+        num_val *= 1000.0
+        idx += 1
     int_num = int(round(num_val))
     if int_num <= 0:
         return None
-    return f'{int_num} {prefix}{unit_b}ps'
+    return f'{int_num} {_BW_PREFIX_ORDER[idx]}{unit_b}ps'
 
 
 def parse_hysteria2(proxy_test: str) -> Dict[str, Any]:

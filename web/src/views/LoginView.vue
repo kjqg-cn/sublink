@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage, NCard, NInput, NButton, NForm, NFormItem, NIcon } from 'naive-ui'
 import { login } from '@/api'
+import BrandLogo from '@/components/BrandLogo.vue'
 import { themeMode, toggleTheme } from '@/theme'
 import { storageSet } from '@/utils/storage'
 
@@ -70,7 +71,7 @@ async function handleLogin() {
 
     <n-card class="login-card" :bordered="false">
       <div class="brand">
-        <div class="brand-logo">S</div>
+        <brand-logo :size="48" />
         <div class="brand-text">
           <h1>Sublink</h1>
           <p>订阅管理后台</p>
@@ -134,19 +135,6 @@ async function handleLogin() {
   display: flex;
   gap: 14px;
   margin-bottom: 26px;
-}
-
-.brand-logo {
-  align-items: center;
-  background: linear-gradient(135deg, #6366f1, #22d3ee);
-  border-radius: 14px;
-  color: #fff;
-  display: flex;
-  font-size: 24px;
-  font-weight: 700;
-  height: 48px;
-  justify-content: center;
-  width: 48px;
 }
 
 .brand-text h1 {

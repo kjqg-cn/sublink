@@ -31,8 +31,8 @@ async function handleSave() {
     message.warning('请输入 3-32 位字母、数字、下划线、点或连字符账号')
     return
   }
-  if (!/^[\x20-\x7E]{4,64}$/.test(password.value)) {
-    message.warning('请输入 4-64 位密码，可包含大小写字母、数字和符号')
+  if (!password.value.trim() || !/^[\x20-\x7E]{4,64}$/.test(password.value)) {
+    message.warning('请输入 4-64 位非全空格密码，可包含大小写字母、数字和符号')
     return
   }
   saving.value = true

@@ -7,9 +7,10 @@ import re
 import secrets
 import tempfile
 import threading
+from flask import current_app, has_app_context
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
-from .exts import db
+from .exts import _is_file_backed_sqlite_uri, db
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,16 @@ class Config(db.Model):  # 全局配置
 
 def create_db():
     app_dir = os.path.dirname(os.path.abspath(__file__))
-    db_dir = ensure_db_dir(app_dir)
+    db_dir = None
+    if has_app_context():
+        uri = str(current_app.config.get('SQLALCHEMY_DATABASE_URI') or '')
+        if _is_file_backed_sqlite_uri(uri) and uri.startswith('sqlite:///'):
+            db_file = uri[len('sqlite:///'):].split('?', 1)[0]
+            if db_file:
+                db_dir = os.path.dirname(os.path.abspath(db_file))
+                os.makedirs(db_dir, exist_ok=True)
+    if not db_dir:
+        db_dir = ensure_db_dir(app_dir)
     with _init_file_lock(db_dir):
         db.create_all()  # 创建所有表
         if User.query.count() == 0:  # 如果用户表为空

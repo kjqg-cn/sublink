@@ -50,6 +50,10 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/LoginsView.vue')
       }
     ]
+  },
+  {
+    path: '/:pathMatch(.*)*',
+    redirect: '/subs'
   }
 ]
 
@@ -63,6 +67,10 @@ router.beforeEach((to, _from, next) => {
   const token = readStoredToken('token')
   if (to.path !== '/login' && !token) {
     next('/login')
+    return
+  }
+  if (to.path === '/login' && token) {
+    next('/subs')
     return
   }
   next()

@@ -16,6 +16,7 @@ import {
   type MenuOption
 } from 'naive-ui'
 import { currentUsername } from '@/api'
+import BrandLogo from '@/components/BrandLogo.vue'
 import { themeMode, toggleTheme } from '@/theme'
 import { clearSessionState, storageRemove } from '@/utils/storage'
 
@@ -158,7 +159,7 @@ function confirmLogout() {
       @expand="collapsed = false"
     >
       <div class="side-head" :class="{ compact: collapsed }">
-        <div class="brand-logo">S</div>
+        <brand-logo :size="36" />
         <div class="brand-copy">
           <div class="brand-title">Sublink</div>
           <div class="brand-sub">订阅管理后台</div>
@@ -176,7 +177,7 @@ function confirmLogout() {
     <n-drawer v-model:show="drawerOpen" placement="left" :width="230">
       <n-drawer-content body-content-style="padding: 0">
         <div class="side-head">
-          <div class="brand-logo">S</div>
+          <brand-logo :size="36" />
           <div class="brand-copy">
             <div class="brand-title">Sublink</div>
             <div class="brand-sub">订阅管理后台</div>
@@ -266,20 +267,6 @@ function confirmLogout() {
   height: 58px;
   overflow: hidden;
   padding: 0 14px;
-}
-
-.brand-logo {
-  align-items: center;
-  background: linear-gradient(135deg, #6366f1, #22d3ee);
-  border-radius: 10px;
-  color: #fff;
-  display: flex;
-  flex: none;
-  font-size: 19px;
-  font-weight: 700;
-  height: 36px;
-  justify-content: center;
-  width: 36px;
 }
 
 .brand-copy {

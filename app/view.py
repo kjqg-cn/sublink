@@ -25,7 +25,7 @@ import yaml
 
 from app import config_manager
 from app.config_manager import (
-    APP_DIR, CustomFeature, CustomLoopback, CustomNodeName, Emoji, SkipCert, Udp,
+    APP_DIR, CustomFeature, CustomLoopback, CustomNodeName, Emoji, Hy2PinFallback, SkipCert, Udp,
     cleanup_runtime_config, get_runtime_config, load_config, path, setup_runtime_config,
 )
 from app.core.generator import (
@@ -61,15 +61,45 @@ MAX_REMARKS_LEN = 40
 DEFAULT_MAX_DECODE_SUB_URLS = 20
 _USERNAME_RE = re.compile(r'^[A-Za-z0-9_.-]{3,32}$')
 _PASSWORD_RE = re.compile(r'^[\x20-\x7E]{4,64}$')
+_FORBIDDEN_SUB_NAME_RE = re.compile(r'[/\\?#\x00-\x1f\x7f]')
+_STATIC_CACHE_PREFIXES = ('/static/', '/assets/')
 _sub_write_rlock = threading.RLock()
 
 
+def _validate_sub_name(raw_name: Any, empty_msg: str = '订阅名称不能为空') -> Tuple[Optional[str], Optional[str]]:
+    """Validate and normalize subscription name, rejecting path-ambiguous or control characters."""
+    if not raw_name or not str(raw_name).strip():
+        return None, empty_msg
+    name = str(raw_name).strip()
+    if len(name) > MAX_SUB_NAME_LEN:
+        return None, f'订阅名称不能超过 {MAX_SUB_NAME_LEN} 个字符'
+    if name in ('.', '..') or _FORBIDDEN_SUB_NAME_RE.search(name):
+        return None, '订阅名称不能包含 /、\\、?、# 或控制字符，且不能为 . 或 ..'
+    return name, None
+
+
+def apply_security_headers(response):
+    """Attach baseline HTTP security headers and no-store caching policy for sensitive endpoints."""
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'no-referrer')
+    req_path = request.path if has_request_context() else ''
+    is_static = req_path == '/favicon.ico' or req_path.startswith(_STATIC_CACHE_PREFIXES)
+    if not is_static:
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
 # ---------------------------------------------------------------------------
-# Login Brute-Force Rate Limiter (isolated user & IP sliding windows)
+# Login Brute-Force Rate Limiter (cross-worker file-backed + in-memory fallback)
 # ---------------------------------------------------------------------------
 
 class _LoginRateLimiter:
-    """Thread-safe sliding-window rate limiter with separate user & IP buckets to prevent LRU eviction bypass."""
+    """
+    Thread-safe & multi-worker-safe sliding-window rate limiter with separate user & IP buckets.
+    Uses atomic file-backed JSON under _init_file_lock when the app runs on file-backed SQLite
+    (sharing limits across Gunicorn workers and restarts), and stays in-memory for :memory: tests.
+    """
 
     def __init__(self, max_user_entries: int = 4096, max_ip_entries: int = 4096):
         self._lock = threading.Lock()
@@ -95,12 +125,26 @@ class _LoginRateLimiter:
         return per_user_max, per_ip_max, window_sec
 
     @staticmethod
-    def _prune(bucket: "OrderedDict[str, List[float]]", key: str, now: float, window: int) -> List[float]:
+    def _resolve_store_dir() -> Optional[str]:
+        if not has_app_context():
+            return None
+        uri = str(current_app.config.get('SQLALCHEMY_DATABASE_URI') or '')
+        if _is_file_backed_sqlite_uri(uri) and uri.startswith('sqlite:///'):
+            db_file = uri[len('sqlite:///'):].split('?', 1)[0]
+            if db_file:
+                return os.path.dirname(os.path.abspath(db_file))
+        return None
+
+    _MAX_CLOCK_SKEW_SEC = 5.0
+
+    @classmethod
+    def _prune(cls, bucket: "OrderedDict[str, List[float]]", key: str, now: float, window: int) -> List[float]:
         timestamps = bucket.get(key)
         if not timestamps:
             return []
         cutoff = now - window
-        fresh = [ts for ts in timestamps if ts > cutoff]
+        upper = now + cls._MAX_CLOCK_SKEW_SEC
+        fresh = [ts for ts in timestamps if cutoff < ts <= upper]
         if fresh:
             bucket[key] = fresh
             bucket.move_to_end(key)
@@ -108,27 +152,127 @@ class _LoginRateLimiter:
             bucket.pop(key, None)
         return fresh
 
+    def _load_file_state(
+        self, state_path: str, now: float, window: int
+    ) -> Tuple["OrderedDict[str, List[float]]", "OrderedDict[str, List[float]]"]:
+        user_b: "OrderedDict[str, List[float]]" = OrderedDict()
+        ip_b: "OrderedDict[str, List[float]]" = OrderedDict()
+        if not os.path.exists(state_path):
+            return user_b, ip_b
+        try:
+            with open(state_path, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            if not isinstance(raw, dict):
+                return user_b, ip_b
+            cutoff = now - window
+            upper = now + self._MAX_CLOCK_SKEW_SEC
+            for target, section_key, limit in (
+                (user_b, 'u', self._max_user_entries),
+                (ip_b, 'ip', self._max_ip_entries),
+            ):
+                section = raw.get(section_key)
+                if not isinstance(section, dict):
+                    continue
+                for k, vals in section.items():
+                    if not isinstance(k, str) or not isinstance(vals, list):
+                        continue
+                    fresh = [
+                        float(ts) for ts in vals
+                        if isinstance(ts, (int, float)) and not isinstance(ts, bool) and cutoff < float(ts) <= upper
+                    ]
+                    if fresh:
+                        target[k] = fresh
+                while len(target) > limit:
+                    target.popitem(last=False)
+        except Exception:
+            return OrderedDict(), OrderedDict()
+        return user_b, ip_b
+
+    @staticmethod
+    def _save_file_state(
+        db_dir: str,
+        state_path: str,
+        user_b: "OrderedDict[str, List[float]]",
+        ip_b: "OrderedDict[str, List[float]]",
+    ) -> None:
+        payload = json.dumps({'u': dict(user_b), 'ip': dict(ip_b)}, separators=(',', ':'))
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix='.tmp_rl_', dir=db_dir)
+            if os.name != 'nt':
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as tmp_file:
+                tmp_file.write(payload)
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+            os.replace(tmp_path, state_path)
+            tmp_path = None
+        except OSError:
+            pass
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _calc_retry_after(attempts: List[float], now: float, window: int) -> int:
+        return min(window, max(1, int(window - (now - attempts[0]))))
+
     def check_blocked(self, ip: str, username: str) -> Tuple[bool, int]:
         per_user_max, per_ip_max, window = self._limits()
-        now = time.monotonic()
+        now = time.time()
         user_key = f'u:{ip}:{(username or "").strip().lower()}'
         ip_key = f'ip:{ip}'
+        db_dir = self._resolve_store_dir()
+        if db_dir:
+            state_path = os.path.join(db_dir, '.login_rate_limit.json')
+            with _init_file_lock(db_dir, lock_name='.login_rate_limit.lock'):
+                user_b, ip_b = self._load_file_state(state_path, now, window)
+                user_attempts = self._prune(user_b, user_key, now, window)
+                ip_attempts = self._prune(ip_b, ip_key, now, window)
+                if len(user_attempts) >= per_user_max:
+                    return True, self._calc_retry_after(user_attempts, now, window)
+                if len(ip_attempts) >= per_ip_max:
+                    return True, self._calc_retry_after(ip_attempts, now, window)
+            return False, 0
+
         with self._lock:
             user_attempts = self._prune(self._user_failures, user_key, now, window)
             ip_attempts = self._prune(self._ip_failures, ip_key, now, window)
             if len(user_attempts) >= per_user_max:
-                retry_after = max(1, int(window - (now - user_attempts[0])))
-                return True, retry_after
+                return True, self._calc_retry_after(user_attempts, now, window)
             if len(ip_attempts) >= per_ip_max:
-                retry_after = max(1, int(window - (now - ip_attempts[0])))
-                return True, retry_after
+                return True, self._calc_retry_after(ip_attempts, now, window)
         return False, 0
 
     def record_failure(self, ip: str, username: str) -> None:
         _, _, window = self._limits()
-        now = time.monotonic()
+        now = time.time()
         user_key = f'u:{ip}:{(username or "").strip().lower()}'
         ip_key = f'ip:{ip}'
+        db_dir = self._resolve_store_dir()
+        if db_dir:
+            state_path = os.path.join(db_dir, '.login_rate_limit.json')
+            with _init_file_lock(db_dir, lock_name='.login_rate_limit.lock'):
+                user_b, ip_b = self._load_file_state(state_path, now, window)
+                u_fresh = self._prune(user_b, user_key, now, window)
+                u_fresh.append(now)
+                user_b[user_key] = u_fresh
+                user_b.move_to_end(user_key)
+                while len(user_b) > self._max_user_entries:
+                    user_b.popitem(last=False)
+
+                ip_fresh = self._prune(ip_b, ip_key, now, window)
+                ip_fresh.append(now)
+                ip_b[ip_key] = ip_fresh
+                ip_b.move_to_end(ip_key)
+                while len(ip_b) > self._max_ip_entries:
+                    ip_b.popitem(last=False)
+                self._save_file_state(db_dir, state_path, user_b, ip_b)
+            return
+
         with self._lock:
             u_fresh = self._prune(self._user_failures, user_key, now, window)
             u_fresh.append(now)
@@ -146,6 +290,17 @@ class _LoginRateLimiter:
 
     def clear_success(self, ip: str, username: str) -> None:
         user_key = f'u:{ip}:{(username or "").strip().lower()}'
+        db_dir = self._resolve_store_dir()
+        if db_dir:
+            state_path = os.path.join(db_dir, '.login_rate_limit.json')
+            _, _, window = self._limits()
+            now = time.time()
+            with _init_file_lock(db_dir, lock_name='.login_rate_limit.lock'):
+                user_b, ip_b = self._load_file_state(state_path, now, window)
+                if user_b.pop(user_key, None) is not None:
+                    self._save_file_state(db_dir, state_path, user_b, ip_b)
+            return
+
         with self._lock:
             self._user_failures.pop(user_key, None)
 
@@ -153,6 +308,11 @@ class _LoginRateLimiter:
         with self._lock:
             self._user_failures.clear()
             self._ip_failures.clear()
+        db_dir = self._resolve_store_dir()
+        if db_dir:
+            state_path = os.path.join(db_dir, '.login_rate_limit.json')
+            with _init_file_lock(db_dir, lock_name='.login_rate_limit.lock'):
+                self._save_file_state(db_dir, state_path, OrderedDict(), OrderedDict())
 
 
 _login_rate_limiter = _LoginRateLimiter()
@@ -278,7 +438,9 @@ def _validate_singbox_json(text: str) -> Optional[str]:
 def _validate_surge_conf(text: str) -> Optional[str]:
     if not text or not text.strip():
         return '配置内容不能为空'
-    if '[Proxy]' not in text or '[Proxy Group]' not in text:
+    has_proxy = bool(re.search(r'(?m)^[ \t]*\[Proxy\][ \t]*\r?$', text))
+    has_group = bool(re.search(r'(?m)^[ \t]*\[Proxy Group\][ \t]*\r?$', text))
+    if not has_proxy or not has_group:
         return '配置格式错误: Surge 配置必须同时包含 [Proxy] 与 [Proxy Group] 区块'
     return None
 
@@ -294,6 +456,13 @@ def _is_singbox_legacy_requested() -> bool:
     if not m:
         return False
     return (int(m.group(1)), int(m.group(2))) < (1, 14)
+
+
+def _resolve_singbox_hy2_pin_fallback() -> Optional[bool]:
+    """Return explicit per-request ?hy2_pin_fallback=1|0 override, or None to use global config."""
+    if 'hy2_pin_fallback' in request.args:
+        return is_truthy(request.args.get('hy2_pin_fallback'))
+    return None
 
 
 def _max_decode_sub_urls() -> int:
@@ -322,9 +491,19 @@ def setup_request_runtime_config():
     setup_runtime_config()
 
 
+@blue.after_request
+def _add_blueprint_security_headers(response):
+    return apply_security_headers(response)
+
+
 @blue.teardown_app_request
 def teardown_request_runtime_config(exc=None):
     cleanup_runtime_config(exc)
+
+
+@blue.route('/healthz', methods=['GET'])
+def healthz():
+    return jsonify({'status': 'ok'}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -371,8 +550,14 @@ def get_sub_url(target: str, name: str):
                                        as_attachment=False, download_name=SUBSCRIPTION_DOWNLOAD_NAME))
     if target == 'sing-box':
         try:
-            if _is_singbox_legacy_requested():
+            legacy_req = _is_singbox_legacy_requested()
+            pin_fallback = _resolve_singbox_hy2_pin_fallback()
+            if legacy_req and pin_fallback is not None:
+                data = singbox_encode(subs, legacy_format=True, hy2_pin_fallback=pin_fallback)
+            elif legacy_req:
                 data = singbox_encode(subs, legacy_format=True)
+            elif pin_fallback is not None:
+                data = singbox_encode(subs, hy2_pin_fallback=pin_fallback)
             else:
                 data = singbox_encode(subs)
         except Exception:
@@ -407,6 +592,11 @@ def get_index():
     if not os.path.exists(index_path):
         return '前端尚未构建，请先在 web 目录执行 npm ci && npm run build，或使用 Docker 构建部署', 503
     return send_file(index_path)
+
+
+@blue.route('/favicon.ico')
+def get_favicon():
+    return send_file(os.path.join(path, 'static', 'favicon.ico'), mimetype='image/x-icon')
 
 
 @blue.route('/next')
@@ -477,7 +667,9 @@ def get_refresh():
     if not user:
         return jsonify({'code': 401, 'msg': '用户不存在或令牌已失效'}), 401
     claims = {'tv': user.token_version or 1, 'uid': user.id}
-    return create_access_token(identity=user.username, additional_claims=claims)
+    resp = make_response(create_access_token(identity=user.username, additional_claims=claims), 200)
+    resp.mimetype = 'text/plain; charset=utf-8'
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -488,17 +680,14 @@ def get_refresh():
 @jwt_required()
 def get_create_sub():
     data = _get_json_dict()
-    raw_name = data.get('name')
     nodes = data.get('node')
     if nodes is None:
         nodes = []
     if not isinstance(nodes, list):
         return jsonify({'code': 400, 'msg': '节点列表格式不正确'})
-    if not raw_name or not str(raw_name).strip():
-        return jsonify({'code': 400, 'msg': '订阅名称不能为空'})
-    name = str(raw_name).strip()
-    if len(name) > MAX_SUB_NAME_LEN:
-        return jsonify({'code': 400, 'msg': f'订阅名称不能超过 {MAX_SUB_NAME_LEN} 个字符'})
+    name, name_err = _validate_sub_name(data.get('name'))
+    if name_err or not name:
+        return jsonify({'code': 400, 'msg': name_err or '订阅名称不能为空'})
 
     parsed_items: List[Tuple[str, str]] = []
     invalid: List[str] = []
@@ -544,16 +733,13 @@ def get_create_sub():
 @jwt_required()
 def create_node():
     data = _get_json_dict()
-    raw_name = data.get('name')
     raw_remarks = data.get('remarks')
     remarks = str(raw_remarks).strip() if raw_remarks is not None else ''
     raw_node = data.get('node')
     node = raw_node.strip() if isinstance(raw_node, str) else ''
-    if not raw_name or not str(raw_name).strip():
-        return jsonify({'code': 400, 'msg': '订阅名称不能为空'})
-    name = str(raw_name).strip()
-    if len(name) > MAX_SUB_NAME_LEN:
-        return jsonify({'code': 400, 'msg': f'订阅名称不能超过 {MAX_SUB_NAME_LEN} 个字符'})
+    name, name_err = _validate_sub_name(data.get('name'))
+    if name_err or not name:
+        return jsonify({'code': 400, 'msg': name_err or '订阅名称不能为空'})
     if len(remarks) > MAX_REMARKS_LEN:
         return jsonify({'code': 400, 'msg': f'备注不能超过 {MAX_REMARKS_LEN} 个字符'})
     if not node:
@@ -562,14 +748,39 @@ def create_node():
         return jsonify({'code': 400, 'msg': '不是有效的协议,请检查后重新输入'})
 
     with _sub_write_lock():
-        cur = Sub.query.filter_by(name=name).order_by(Sub.id.asc()).first()
+        existing_subs = Sub.query.filter_by(name=name).order_by(Sub.id.asc()).all()
+        cur = existing_subs[0] if existing_subs else None
+        token = next((s.access_token for s in existing_subs if s.access_token), None) or new_access_token()
+        for existing in existing_subs:
+            if not existing.access_token:
+                existing.access_token = token
         db.session.add(Sub(
             name=name, node=node, remarks=remarks,
             sort_order=cur.sort_order if cur else get_next_sub_sort_order(),
-            access_token=cur.access_token if cur else new_access_token(),
+            access_token=token,
             legacy_enabled=cur.legacy_enabled if cur else False
         ))
         return _commit_response('创建成功')
+
+
+@blue.route('/get_sub_summaries', methods=['POST'])
+@jwt_required()
+def get_sub_summaries():
+    rows = (
+        db.session.query(
+            Sub.name,
+            db.func.count(Sub.id),
+            db.func.min(Sub.sort_order),
+        )
+        .filter(Sub.name.isnot(None), Sub.name != '')
+        .group_by(Sub.name)
+        .order_by(db.func.min(Sub.sort_order).asc(), db.func.min(Sub.id).asc())
+        .all()
+    )
+    return jsonify([
+        {'name': row[0], 'count': int(row[1]), 'sort_order': int(row[2] or 0)}
+        for row in rows
+    ])
 
 
 @blue.route('/get_subs', methods=['POST'])
@@ -617,12 +828,9 @@ def get_subs():
 @blue.route('/rename_sub/<path:name>', methods=['POST'])
 @jwt_required()
 def rename_sub(name: str):
-    raw_new_name = _get_json_dict().get('newName')
-    if not raw_new_name or not str(raw_new_name).strip():
-        return jsonify({'code': 400, 'msg': '新名称不能为空'})
-    new_name = str(raw_new_name).strip()
-    if len(new_name) > MAX_SUB_NAME_LEN:
-        return jsonify({'code': 400, 'msg': f'订阅名称不能超过 {MAX_SUB_NAME_LEN} 个字符'})
+    new_name, name_err = _validate_sub_name(_get_json_dict().get('newName'), empty_msg='新名称不能为空')
+    if name_err or not new_name:
+        return jsonify({'code': 400, 'msg': name_err or '新名称不能为空'})
 
     with _sub_write_lock():
         subs = Sub.query.filter_by(name=name).all()
@@ -639,6 +847,23 @@ def rename_sub(name: str):
 @jwt_required()
 def get_sub(name: str):
     subs = Sub.query.filter_by(name=name).order_by(Sub.sort_order.asc(), Sub.id.asc()).all()
+    if subs and (any(not s.access_token for s in subs) or len({s.access_token for s in subs}) > 1):
+        with _sub_write_lock():
+            db.session.expire_all()
+            subs = Sub.query.filter_by(name=name).order_by(Sub.sort_order.asc(), Sub.id.asc()).all()
+            token = next((s.access_token for s in subs if s.access_token), None) or new_access_token()
+            changed = False
+            for s in subs:
+                if s.access_token != token:
+                    s.access_token = token
+                    changed = True
+            payload = [{
+                'id': s.id, 'name': s.name, 'node': s.node, 'remarks': s.remarks,
+                'access_token': s.access_token, 'legacy_enabled': s.legacy_enabled
+            } for s in subs]
+            if changed:
+                db.session.commit()
+            return jsonify(payload)
     return jsonify([{
         'id': s.id, 'name': s.name, 'node': s.node, 'remarks': s.remarks,
         'access_token': s.access_token, 'legacy_enabled': s.legacy_enabled
@@ -708,10 +933,12 @@ def get_set_sub():
         if not subs:
             return jsonify({'code': 400, 'msg': '订阅不存在'})
         sort_order = subs[0].sort_order if subs else get_next_sub_sort_order()
-        access_token = subs[0].access_token if subs else new_access_token()
+        access_token = next((s.access_token for s in subs if s.access_token), None) or new_access_token()
         legacy_enabled = subs[0].legacy_enabled if subs else False
         try:
-            Sub.query.filter_by(name=name).delete(synchronize_session=False)
+            for existing in subs:
+                db.session.delete(existing)
+            db.session.flush()
             db.session.add_all([
                 Sub(name=name, node=node, remarks=remarks, sort_order=sort_order,
                     access_token=access_token, legacy_enabled=legacy_enabled)
@@ -803,15 +1030,18 @@ def get_set_user():
     target_username = data.get('username')
     if not current_user or current_user != target_username:
         return jsonify({'code': 403, 'msg': '无权修改其他用户账号'})
-    user = User.query.filter_by(username=target_username).first()
-    if not user:
-        return jsonify({'code': 400, 'msg': '账号不正确'})
+
+    client_ip = get_client_ip()
+    rate_key = f'set_user:{current_user}'
+    blocked, retry_after = _login_rate_limiter.check_blocked(client_ip, rate_key)
+    if blocked:
+        resp = make_response(jsonify({'code': 429, 'msg': '密码验证失败次数过多，请稍后再试'}), 429)
+        resp.headers['Retry-After'] = str(retry_after)
+        return resp
+
     old_password = data.get('oldPassword')
     if not isinstance(old_password, str) or not old_password:
         return jsonify({'code': 400, 'msg': '请输入当前密码'})
-    old_valid, _ = verify_password(user.password, old_password)
-    if not old_valid:
-        return jsonify({'code': 400, 'msg': '当前密码不正确'})
 
     new_username = data.get('newUserName')
     password = data.get('password')
@@ -827,13 +1057,35 @@ def get_set_user():
         return jsonify({'code': 400, 'msg': '用户名需为 3-32 位字母、数字、下划线、点或连字符'})
     if not _PASSWORD_RE.match(password):
         return jsonify({'code': 400, 'msg': '密码需为 4-64 位可见 ASCII 字符'})
-    if new_username != target_username and User.query.filter_by(username=new_username).first():
-        return jsonify({'code': 400, 'msg': '用户名已存在'})
-    user.username = new_username
-    user.password = hash_password(password)
-    # Bump token_version to immediately revoke all previously issued access and refresh tokens
-    user.token_version = (user.token_version or 1) + 1
-    return _commit_response('修改成功', error_prefix='错误信息:')
+
+    # Perform slow PBKDF2 verify/hash and rate-limit file updates outside _sub_write_lock()
+    # to avoid blocking global subscription writes or nesting cross-process file locks.
+    user_snapshot = User.query.filter_by(username=target_username).first()
+    if not user_snapshot:
+        return jsonify({'code': 400, 'msg': '账号不正确'})
+    expected_token_version = user_snapshot.token_version or 1
+    old_valid, _ = verify_password(user_snapshot.password, old_password)
+    if not old_valid:
+        _login_rate_limiter.record_failure(client_ip, rate_key)
+        return jsonify({'code': 400, 'msg': '当前密码不正确'})
+    _login_rate_limiter.clear_success(client_ip, rate_key)
+
+    new_password_hash = hash_password(password)
+
+    with _sub_write_lock():
+        db.session.expire_all()
+        user = User.query.filter_by(username=target_username).first()
+        if not user:
+            return jsonify({'code': 400, 'msg': '账号不正确'})
+        if (user.token_version or 1) != expected_token_version:
+            return jsonify({'code': 400, 'msg': '账号凭据已被其他会话修改，请重新登录后再试'})
+        if new_username != target_username and User.query.filter_by(username=new_username).first():
+            return jsonify({'code': 400, 'msg': '用户名已存在'})
+        user.username = new_username
+        user.password = new_password_hash
+        # Bump token_version to immediately revoke all previously issued access and refresh tokens
+        user.token_version = expected_token_version + 1
+        return _commit_response('修改成功', error_prefix='错误信息:')
 
 
 @blue.route('/decode_sub', methods=['POST'])
@@ -881,7 +1133,7 @@ def get_ip_address():
 @jwt_required()
 def set_config():
     data = _get_json_dict()
-    keys = ['udp', 'skipcert', 'emoji', 'custom', 'custom_loopback', 'custom_node_name']
+    keys = ['udp', 'skipcert', 'emoji', 'hy2_pin_fallback', 'custom', 'custom_loopback', 'custom_node_name']
     with _sub_write_lock():
         try:
             for key in keys:
@@ -920,6 +1172,7 @@ _CONFIG_GLOBAL_NAMES = {
     'CustomLoopback',
     'CustomNodeName',
     'Emoji',
+    'Hy2PinFallback',
     'SkipCert',
     'Udp',
     'path',

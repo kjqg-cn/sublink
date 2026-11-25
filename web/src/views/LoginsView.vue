@@ -71,6 +71,7 @@ onMounted(load)
       <n-data-table
         :columns="columns"
         :data="records"
+        :row-key="(row: LoginRecord) => row.id"
         :loading="loading"
         :pagination="pagination"
         :scroll-x="800"

@@ -34,7 +34,7 @@ from app.core.utils import (
     redact_uri_credentials,
     rewritable_node_types,
 )
-from app.exts import db
+from app.exts import _is_file_backed_sqlite_uri, db
 from app.model import Login
 
 logger = logging.getLogger(__name__)
@@ -513,11 +513,21 @@ def _emoji_cache_clear() -> None:
         _emoji_cache_misses = 0
 
 
+def _record_emoji_fail(key: str) -> None:
+    if EMOJI_FAIL_CACHE_TTL <= 0:
+        return
+    with _emoji_cache_lock:
+        _emoji_fail_cache[key] = time.monotonic() + EMOJI_FAIL_CACHE_TTL
+        _emoji_fail_cache.move_to_end(key)
+        while len(_emoji_fail_cache) > EMOJI_FAIL_CACHE_MAXSIZE:
+            _emoji_fail_cache.popitem(last=False)
+
+
 def get_country_emoji(hostname: str) -> str:
     """
     Resolve hostname/IP (IPv4 & IPv6) and retrieve country emoji flag from ipwho.is over HTTPS.
-    Caches valid flags in a bounded LRU cache; transient failures only use a short negative TTL
-    so rate-limits/timeouts never permanently poison the cache.
+    Caches valid flags in a bounded LRU cache; transient failures and local/private DNS hits
+    both use a short negative TTL so repeated subscription generations avoid redundant lookups.
     """
     global _emoji_cache_hits, _emoji_cache_misses
     if not hostname or not str(hostname).strip():
@@ -544,24 +554,29 @@ def get_country_emoji(hostname: str) -> str:
             return ''
         lower_ip = ip.lower().rstrip('.')
         if lower_ip == 'localhost' or lower_ip.endswith('.localhost') or lower_ip.endswith('.local'):
+            _record_emoji_fail(key)
             return ''
         parsed_ip = _parse_ip_literal(ip)
         if parsed_ip is not None:
             if _is_forbidden_ip(parsed_ip):
+                _record_emoji_fail(key)
                 return ''
             target_ip = str(parsed_ip)
         else:
             addr_infos = socket.getaddrinfo(ip, None, type=socket.SOCK_STREAM)
             if not addr_infos:
+                _record_emoji_fail(key)
                 return ''
             target_ip = ''
             for info in addr_infos:
                 resolved_ip = _parse_ip_literal(info[4][0])
                 if resolved_ip is None or _is_forbidden_ip(resolved_ip):
+                    _record_emoji_fail(key)
                     return ''
                 if not target_ip:
                     target_ip = str(resolved_ip)
             if not target_ip:
+                _record_emoji_fail(key)
                 return ''
         safe_ip = urllib.parse.quote(target_ip, safe='')
         url = f'https://ipwho.is/{safe_ip}'
@@ -584,12 +599,7 @@ def get_country_emoji(hostname: str) -> str:
     except Exception as e:
         logger.warning('获取入口国旗失败: %s 错误信息: %s', key, e)
 
-    if EMOJI_FAIL_CACHE_TTL > 0:
-        with _emoji_cache_lock:
-            _emoji_fail_cache[key] = time.monotonic() + EMOJI_FAIL_CACHE_TTL
-            _emoji_fail_cache.move_to_end(key)
-            while len(_emoji_fail_cache) > EMOJI_FAIL_CACHE_MAXSIZE:
-                _emoji_fail_cache.popitem(last=False)
+    _record_emoji_fail(key)
     return ''
 
 
@@ -609,34 +619,79 @@ def _max_login_log_rows() -> int:
     return DEFAULT_MAX_LOGIN_LOG_ROWS
 
 
+def _lookup_login_geoip(ip_address: str) -> str:
+    try:
+        params = {
+            'ip': ip_address,
+            'json': 'true'
+        }
+        url = 'https://whois.pconline.com.cn/ipJson.jsp'
+        if requests.get != _ORIGINAL_REQUESTS_GET:
+            res = requests.get(url, params=params, timeout=(0.5, 1.0))
+        else:
+            res = _get_remote_session().get(url, params=params, timeout=(0.5, 1.0), allow_redirects=False)
+        if res.status_code == 200 and res.text:
+            js = json.loads(res.text)
+            return str(js.get('addr') or '')
+    except Exception as e:
+        logger.warning('获取IP归属地失败 (降级记录): %s', e)
+    return ''
+
+
+_GEOIP_BACKFILL_MAX_WORKERS = 2
+_geoip_backfill_sem = threading.BoundedSemaphore(_GEOIP_BACKFILL_MAX_WORKERS)
+
+
+def _backfill_login_geoip_async(app_obj: Any, login_id: int, ip_address: str) -> None:
+    try:
+        address = _lookup_login_geoip(ip_address)
+        if not address:
+            return
+        with app_obj.app_context():
+            try:
+                row = Login.query.filter_by(id=login_id).first()
+                if row and not row.address:
+                    row.address = address
+                    db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                logger.warning('异步回填登录归属地失败: %s', e)
+    except Exception as e:
+        logger.warning('异步回填登录归属地异常: %s', e)
+    finally:
+        _geoip_backfill_sem.release()
+
+
 def save_ip_address() -> None:
     """Record login IP and optional geographical location in database, trimming old logs."""
     try:
         ip_address = get_client_ip()
-        address = ''
         geoip_enabled = is_truthy(os.environ.get('ENABLE_LOGIN_GEOIP', '1'))
-        if geoip_enabled and not is_private_or_loopback_ip(ip_address):
-            try:
-                params = {
-                    'ip': ip_address,
-                    'json': 'true'
-                }
-                url = 'https://whois.pconline.com.cn/ipJson.jsp'
-                if requests.get != _ORIGINAL_REQUESTS_GET:
-                    res = requests.get(url, params=params, timeout=(0.5, 1.0))
-                else:
-                    res = _get_remote_session().get(url, params=params, timeout=(0.5, 1.0), allow_redirects=False)
-                if res.status_code == 200 and res.text:
-                    js = json.loads(res.text)
-                    address = js.get('addr') or ''
-            except Exception as e:
-                logger.warning('获取IP归属地失败 (降级记录): %s', e)
+        should_lookup = geoip_enabled and not is_private_or_loopback_ip(ip_address)
+        use_async = False
+        app_obj = None
+        if (
+            should_lookup
+            and has_app_context()
+            and not current_app.config.get('TESTING')
+            and requests.get == _ORIGINAL_REQUESTS_GET
+        ):
+            uri = str(current_app.config.get('SQLALCHEMY_DATABASE_URI') or '')
+            if _is_file_backed_sqlite_uri(uri):
+                use_async = True
+                app_obj = current_app._get_current_object()
+
+        address = ''
+        if should_lookup and not use_async:
+            address = _lookup_login_geoip(ip_address)
 
         timer = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         login = Login(ip=ip_address, address=address, time=timer)
+        login_id: Optional[int] = None
         try:
             db.session.add(login)
             db.session.flush()
+            login_id = login.id
             max_rows = _max_login_log_rows()
             cutoff = (
                 db.session.query(Login.id)
@@ -651,6 +706,20 @@ def save_ip_address() -> None:
         except Exception as e:
             db.session.rollback()
             logger.warning('保存登录记录失败: %s', e)
+            return
+
+        if use_async and app_obj is not None and login_id is not None:
+            if _geoip_backfill_sem.acquire(blocking=False):
+                try:
+                    threading.Thread(
+                        target=_backfill_login_geoip_async,
+                        args=(app_obj, login_id, ip_address),
+                        daemon=True,
+                        name=f'geoip-{login_id}',
+                    ).start()
+                except Exception as e:
+                    _geoip_backfill_sem.release()
+                    logger.warning('启动异步归属地回填线程失败: %s', e)
     except Exception as e:
         logger.warning('save_ip_address 异常: %s', e)
 
@@ -703,6 +772,18 @@ def fetch_remote_sub(url: str, use_cache: bool = True) -> List[str]:
         line for line in raw_lines
         if is_valid_node_uri(line) and get_proxy_type(line) in rewritable_node_types
     ]
+    if raw_lines and not valid_lines:
+        stripped_text = text.lstrip()
+        if stripped_text.startswith('{') and '"outbounds"' in stripped_text:
+            logger.warning(
+                '远程订阅返回疑似 sing-box JSON 而非节点 URI 列表，已忽略: %s',
+                redact_uri_credentials(url),
+            )
+        elif any(line.startswith('proxies:') for line in raw_lines[:50]):
+            logger.warning(
+                '远程订阅返回疑似 Clash YAML 而非节点 URI 列表，已忽略: %s',
+                redact_uri_credentials(url),
+            )
 
     if not is_testing:
         _cache_put(url, valid_lines)

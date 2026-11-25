@@ -96,6 +96,20 @@ def read_schema_state(db_path=DB_PATH):
                     if idx_cols == ['key']:
                         schema_items.add('config:unique_key')
                         break
+        if 'login' in tables:
+            schema_items.add('login:table')
+            for col_row in connection.execute('PRAGMA table_info(login)').fetchall():
+                if col_row[1] == 'ip':
+                    col_type = str(col_row[2] or '').upper()
+                    if col_type in ('TEXT', 'VARCHAR', '') or '(' not in col_type:
+                        if col_type == 'TEXT':
+                            schema_items.add('login:ip_wide')
+                    else:
+                        import re as _re
+                        m_len = _re.search(r'\((\d+)\)', col_type)
+                        if m_len and int(m_len.group(1)) >= 64:
+                            schema_items.add('login:ip_wide')
+                    break
         return tables, schema_items, _read_alembic_revision(connection, tables)
     finally:
         connection.close()
@@ -121,7 +135,7 @@ def detect_schema_revision(schema_items):
         return TOKEN_REVISION
     if 'user:token_version' not in schema_items or 'user:unique_username' not in schema_items:
         return INDEX_REVISION
-    if 'config:unique_key' in schema_items:
+    if {'config:unique_key', 'login:table', 'login:ip_wide'} <= schema_items:
         return CONFIG_SCHEMA_REVISION
     return USER_AUTH_REVISION
 

@@ -12,6 +12,7 @@ const config = ref<GlobalConfig>({
   udp: false,
   skipcert: false,
   emoji: false,
+  hy2_pin_fallback: false,
   custom: false,
   custom_loopback: false,
   custom_node_name: false
@@ -26,6 +27,7 @@ async function load() {
       udp: !!res.udp,
       skipcert: !!res.skipcert,
       emoji: !!res.emoji,
+      hy2_pin_fallback: !!res.hy2_pin_fallback,
       custom: !!res.custom,
       custom_loopback: !!res.custom_loopback,
       custom_node_name: !!res.custom_node_name
@@ -99,6 +101,20 @@ onMounted(() => {
             </div>
             <n-switch
               v-model:value="config.skipcert"
+              :disabled="loading || saving || loadFailed"
+              @update:value="save"
+            />
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">sing-box 兼容 Hysteria2 指纹节点</div>
+              <div class="setting-desc">
+                sing-box 稳定版暂不支持整证书 pinSHA256 校验；开启后仅将带 pinSHA256 的 Hysteria2 节点在 sing-box 导出时自动设为 insecure: true（会降低对应节点的防中间人校验，也支持通过订阅链接附加 ?hy2_pin_fallback=1 按需开启）。
+              </div>
+            </div>
+            <n-switch
+              v-model:value="config.hy2_pin_fallback"
               :disabled="loading || saving || loadFailed"
               @update:value="save"
             />

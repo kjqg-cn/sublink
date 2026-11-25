@@ -166,6 +166,8 @@ class Hysteria2HandlingTest(unittest.TestCase):
         self.assertNotIn('utls', outbounds['Hy1']['tls'])
         self.assertNotIn('utls', outbounds['Hy2']['tls'])
         self.assertNotIn('certificate_public_key_sha256', outbounds['Hy2']['tls'])
+        self.assertNotIn('certificate_sha256', outbounds['Hy2']['tls'])
+        self.assertFalse(outbounds['Hy2']['tls']['insecure'])
         self.assertEqual(outbounds['Hy2']['server_ports'], ['20000:20010', '8080:8080'])
         self.assertEqual(outbounds['Hy2']['hop_interval'], '10s')
         self.assertEqual(outbounds['Hy2']['hop_interval_max'], '20s')
@@ -234,6 +236,50 @@ class Hysteria2HandlingTest(unittest.TestCase):
         self.assertIn('port-hopping-interval=30', line_sal)
         self.assertIn('gecko-password=geckopw', line_gecko)
         self.assertIn('download-bandwidth=1000', line_gecko)
+
+    def test_hysteria2_unitless_bandwidth_normalizes_to_mbps_and_pin_fallback(self):
+        unitless_node = 'hysteria2://pw@hy2.example.com:443?sni=hy2.example.com&upmbps=100&down=200#Hy2Plain'
+        pinned_node = (
+            f'hysteria2://pw@hy2.example.com:443?sni=hy2.example.com'
+            f'&up=100&down=200&pinSHA256={VALID_SHA256_UPPER}#Hy2Pinned'
+        )
+        parsed = parse_hysteria2(unitless_node)
+        self.assertEqual(parsed['up'], '100 Mbps')
+        self.assertEqual(parsed['down'], '200 Mbps')
+
+        with patch.object(view, 'path', self.temp_dir.name):
+            clash_raw = view.clash_encode([SimpleNamespace(node=unitless_node)])
+            clash_data = yaml.safe_load(clash_raw)
+            sb_default = json.loads(view.singbox_encode([
+                SimpleNamespace(node=unitless_node),
+                SimpleNamespace(node=pinned_node),
+            ]))
+            sb_fallback = json.loads(view.singbox_encode([
+                SimpleNamespace(node=unitless_node),
+                SimpleNamespace(node=pinned_node),
+            ], hy2_pin_fallback=True))
+
+        self.assertIn('up: 100 Mbps', clash_raw)
+        self.assertIn('down: 200 Mbps', clash_raw)
+        self.assertEqual(clash_data['proxies'][0]['up'], '100 Mbps')
+        self.assertEqual(clash_data['proxies'][0]['down'], '200 Mbps')
+
+        ob_default = {o['tag']: o for o in sb_default['outbounds']}
+        self.assertEqual(ob_default['Hy2Plain']['up_mbps'], 100)
+        self.assertEqual(ob_default['Hy2Plain']['down_mbps'], 200)
+        self.assertFalse(ob_default['Hy2Plain']['tls']['insecure'])
+        self.assertFalse(ob_default['Hy2Pinned']['tls']['insecure'])
+
+        ob_fallback = {o['tag']: o for o in sb_fallback['outbounds']}
+        self.assertFalse(ob_fallback['Hy2Plain']['tls']['insecure'])
+        self.assertEqual(ob_fallback['Hy2Pinned']['up_mbps'], 100)
+        self.assertEqual(ob_fallback['Hy2Pinned']['down_mbps'], 200)
+        self.assertTrue(ob_fallback['Hy2Pinned']['tls']['insecure'])
+        self.assertNotIn('certificate_sha256', ob_fallback['Hy2Pinned']['tls'])
+        self.assertNotIn('certificate_public_key_sha256', ob_fallback['Hy2Pinned']['tls'])
+
+        surge_line, _ = parse_surge_node(unitless_node)
+        self.assertIn('download-bandwidth=200', surge_line)
 
 
 if __name__ == '__main__':

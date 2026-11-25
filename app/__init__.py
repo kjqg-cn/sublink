@@ -11,7 +11,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .exts import init_exts
 from .model import _init_file_lock, ensure_db_dir
-from .view import blue
+from .view import apply_security_headers, blue
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,7 @@ def create_app():
     app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=15)  # 15天后刷新令牌过期
     _configure_reverse_proxy(app)
     _register_error_handlers(app)
+    app.after_request(apply_security_headers)
     env = os.environ.get('ENV')
     if env == 'development':
         logger.info('当前处于开发环境: %s', env)

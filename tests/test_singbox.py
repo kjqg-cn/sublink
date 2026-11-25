@@ -294,6 +294,82 @@ class SingBoxEncodeTest(unittest.TestCase):
         self.assertEqual(by_tag['rs-direct']['http_client'], 'remote-client-direct')
         self.assertNotIn('http_client', by_tag['rs-implicit'])
 
+    def test_vless_reality_normalization_flow_fp_short_id_and_insecure(self):
+        import yaml
+
+        # 1. Mixed-case query keys, type=raw -> tcp, flow udp443 -> vision, fp=none -> firefox, scientific short-id
+        raw_reality = (
+            'vless://00000000-0000-0000-0000-000000000001@1.2.3.4:443'
+            '?Encryption=none&Flow=xtls-rprx-vision-udp443&Security=REALITY'
+            '&SNI=www.example.com&FP=none&PBK=pubkey123&SID=1e234567'
+            '&Type=raw&insecure=1#RealityRaw'
+        )
+        # 2. User-like standard TCP Reality with fp=firefox & flow=xtls-rprx-vision
+        std_reality = (
+            'vless://00000000-0000-0000-0000-000000000002@1.2.3.4:443'
+            '?encryption=none&flow=xtls-rprx-vision&security=reality'
+            '&sni=www.domain.com&fp=firefox&pbk=pubkey456&sid=0123'
+            '&spx=%2Fxxx&type=tcp&headerType=none#RealityStd'
+        )
+        # 3. Non-TCP (gRPC) Reality with stray flow must strip flow
+        grpc_reality = (
+            'vless://00000000-0000-0000-0000-000000000003@1.2.3.4:443'
+            '?flow=xtls-rprx-vision&security=reality&sni=www.example.com'
+            '&pbk=pubkey789&type=grpc&serviceName=svc#RealityGrpc'
+        )
+        # 4. Plain TLS VLESS with fp=none must omit uTLS rather than forcing firefox
+        tls_no_fp = (
+            'vless://00000000-0000-0000-0000-000000000004@1.2.3.4:443'
+            '?security=tls&sni=tls.example.com&fp=none&type=tcp#TlsNoFp'
+        )
+
+        # Prepare minimal Clash template in temp db dir
+        clash_tpl = (
+            'proxies:\n\nproxy-groups:\n  - name: select\n    type: select\n    proxies:\n      - auto\n'
+        )
+        with open(os.path.join(self.temp_dir.name, 'db', 'clash.yaml'), 'w', encoding='utf-8') as f:
+            f.write(clash_tpl)
+
+        subs = [SimpleNamespace(node=n) for n in (raw_reality, std_reality, grpc_reality, tls_no_fp)]
+        with patch.object(view, 'path', self.temp_dir.name):
+            clash_text = view.clash_encode(subs)
+            clash_data = yaml.safe_load(clash_text)
+            sb_data = json.loads(view.singbox_encode(subs))
+
+        # Raw YAML must explicitly quote short-id so Go yaml.v3 never parses 1e234567 as float or 0123 as int
+        self.assertIn("short-id: '1e234567'", clash_text)
+        self.assertIn("short-id: '0123'", clash_text)
+
+        clash_by_name = {p['name']: p for p in clash_data['proxies']}
+        self.assertEqual(clash_by_name['RealityRaw']['network'], 'tcp')
+        self.assertEqual(clash_by_name['RealityRaw']['flow'], 'xtls-rprx-vision')
+        self.assertEqual(clash_by_name['RealityRaw']['client-fingerprint'], 'firefox')
+        self.assertEqual(clash_by_name['RealityRaw']['servername'], 'www.example.com')
+        self.assertEqual(clash_by_name['RealityRaw']['reality-opts'], {
+            'public-key': 'pubkey123',
+            'short-id': '1e234567',
+        })
+        self.assertEqual(clash_by_name['RealityStd']['flow'], 'xtls-rprx-vision')
+        self.assertEqual(clash_by_name['RealityStd']['client-fingerprint'], 'firefox')
+        self.assertNotIn('flow', clash_by_name['RealityGrpc'])
+        self.assertEqual(clash_by_name['RealityGrpc']['client-fingerprint'], 'firefox')
+        self.assertNotIn('client-fingerprint', clash_by_name['TlsNoFp'])
+
+        sb_by_tag = {o['tag']: o for o in sb_data['outbounds']}
+        self.assertEqual(sb_by_tag['RealityRaw']['flow'], 'xtls-rprx-vision')
+        self.assertFalse(sb_by_tag['RealityRaw']['tls']['insecure'])
+        self.assertEqual(sb_by_tag['RealityRaw']['tls']['utls'], {'enabled': True, 'fingerprint': 'firefox'})
+        self.assertEqual(sb_by_tag['RealityRaw']['tls']['reality'], {
+            'enabled': True,
+            'public_key': 'pubkey123',
+            'short_id': '1e234567',
+        })
+        self.assertEqual(sb_by_tag['RealityStd']['flow'], 'xtls-rprx-vision')
+        self.assertEqual(sb_by_tag['RealityStd']['tls']['utls']['fingerprint'], 'firefox')
+        self.assertNotIn('flow', sb_by_tag['RealityGrpc'])
+        self.assertEqual(sb_by_tag['RealityGrpc']['tls']['utls'], {'enabled': True, 'fingerprint': 'firefox'})
+        self.assertNotIn('utls', sb_by_tag['TlsNoFp']['tls'])
+
 
 if __name__ == '__main__':
     unittest.main()
