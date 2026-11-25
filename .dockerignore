@@ -3,6 +3,9 @@ app/static/dist
 app/templates
 box.sh
 build.sh
+local_docs
+readme
+tests
 .git
 .venv
 __pycache__

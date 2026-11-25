@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
+import { clearSessionState, storageGet, storageRemove, storageSet } from './storage'
 
 // 复现旧版 request.js 的行为：JWT 携带、401 自动刷新并重放请求（带并发互斥锁，不依赖本地时钟）、刷新失败清 token 重登。
 const baseURL = import.meta.env.DEV ? '/api' : ''
@@ -15,7 +16,7 @@ interface RetryableRequestConfig extends InternalAxiosRequestConfig {
 }
 
 export function readStoredToken(key: 'token' | 'refresh'): string | null {
-  const raw = localStorage.getItem(key)
+  const raw = storageGet('local', key)
   if (!raw) return null
   try {
     const parsed: unknown = JSON.parse(raw)
@@ -24,7 +25,7 @@ export function readStoredToken(key: 'token' | 'refresh'): string | null {
     }
     return null
   } catch {
-    localStorage.removeItem(key)
+    storageRemove('local', key)
     return null
   }
 }
@@ -64,7 +65,7 @@ async function refreshToken(): Promise<string> {
         { headers: { Authorization: 'Bearer ' + refresh } }
       )
       if (res.status === 200 && typeof res.data === 'string' && res.data.trim()) {
-        localStorage.setItem('token', JSON.stringify(res.data))
+        storageSet('local', 'token', JSON.stringify(res.data))
         return res.data
       }
       clearAuthAndReload()
@@ -83,8 +84,9 @@ async function refreshToken(): Promise<string> {
 }
 
 function clearAuthAndReload(): void {
-  localStorage.removeItem('token')
-  localStorage.removeItem('refresh')
+  storageRemove('local', 'token')
+  storageRemove('local', 'refresh')
+  clearSessionState()
   if (!location.hash.startsWith('#/login')) {
     location.reload()
   }

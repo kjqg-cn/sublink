@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useMessage, NCard, NCheckbox, NSpace, NSpin, NTooltip, NIcon } from 'naive-ui'
+import { useMessage, NAlert, NButton, NCard, NSwitch, NSpin } from 'naive-ui'
 import { getConfig, setConfig, type GlobalConfig } from '@/api'
 
 const message = useMessage()
 
 const loading = ref(false)
 const saving = ref(false)
+const loadFailed = ref(false)
 const config = ref<GlobalConfig>({
   udp: false,
   skipcert: false,
@@ -18,6 +19,7 @@ const config = ref<GlobalConfig>({
 
 async function load() {
   loading.value = true
+  loadFailed.value = false
   try {
     const res = await getConfig()
     config.value = {
@@ -29,6 +31,7 @@ async function load() {
       custom_node_name: !!res.custom_node_name
     }
   } catch {
+    loadFailed.value = true
     message.error('加载设置失败')
   } finally {
     loading.value = false
@@ -36,12 +39,17 @@ async function load() {
 }
 
 async function save() {
+  if (loading.value || saving.value || loadFailed.value) return
   saving.value = true
   try {
     const { code, msg } = await setConfig({ ...config.value })
     message[code === 200 ? 'success' : 'warning'](msg)
+    if (code !== 200) {
+      await load()
+    }
   } catch {
     message.error('保存设置失败')
+    await load()
   } finally {
     saving.value = false
   }
@@ -53,120 +61,173 @@ onMounted(() => {
 </script>
 
 <template>
-  <n-card class="settings-card" title="全局设置">
+  <div class="page-section">
+    <p class="page-desc">
+      所有开关修改后自动保存，实时作用于 V2Ray / Clash / Surge / sing-box 订阅生成。
+    </p>
+    <n-alert v-if="loadFailed" type="error" :bordered="false" style="margin-bottom: 16px">
+      <div class="load-error-row">
+        <span>全局设置读取失败，已禁用开关操作以防覆盖原有配置</span>
+        <n-button size="small" secondary type="error" :disabled="loading" @click="load">
+          重新加载
+        </n-button>
+      </div>
+    </n-alert>
     <n-spin :show="loading || saving">
-      <p class="settings-tip">修改后自动保存，作用于所有订阅生成。</p>
-      <n-space vertical size="large">
-        <div class="setting-item">
-          <n-checkbox v-model:checked="config.udp" @update:checked="save">开启 UDP</n-checkbox>
-          <n-tooltip trigger="hover" :style="{ maxWidth: '340px' }">
-            <template #trigger>
-              <n-icon class="help-icon" :size="16">
-                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 16h-2v-2h2v2zm1.07-7.75l-.9.92C12.45 11.9 12 12.5 12 14h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H7c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/></svg>
-              </n-icon>
-            </template>
-            <span>控制导出的客户端配置（如 Clash 的 udp: true、Surge 的 udp-relay）。开启后客户端才会向节点发送 UDP 流量（用于游戏、语音通话及 QUIC 等）；若关闭，客户端将在本地禁止该节点的 UDP 转发。</span>
-          </n-tooltip>
-        </div>
-
-        <div class="setting-item">
-          <n-checkbox v-model:checked="config.skipcert" @update:checked="save">跳过证书验证</n-checkbox>
-          <n-tooltip trigger="hover" :style="{ maxWidth: '340px' }">
-            <template #trigger>
-              <n-icon class="help-icon" :size="16">
-                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 16h-2v-2h2v2zm1.07-7.75l-.9.92C12.45 11.9 12 12.5 12 14h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H7c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/></svg>
-              </n-icon>
-            </template>
-            <span>在客户端配置中跳过 TLS 证书合法性校验（skip-cert-verify）。可解决自签名证书或域名不匹配导致的连接失败，但会降低传输安全性。</span>
-          </n-tooltip>
-        </div>
-
-        <div class="setting-item">
-          <n-checkbox v-model:checked="config.emoji" @update:checked="save">emoji 入口国旗</n-checkbox>
-          <n-tooltip trigger="hover" :style="{ maxWidth: '340px' }">
-            <template #trigger>
-              <n-icon class="help-icon" :size="16">
-                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 16h-2v-2h2v2zm1.07-7.75l-.9.92C12.45 11.9 12 12.5 12 14h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H7c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/></svg>
-              </n-icon>
-            </template>
-            <span>根据节点服务器 IP 自动查询地理位置并在节点名称前添加对应国旗 Emoji。注意：节点较多时会因请求外部 IP 接口增加订阅生成耗时。</span>
-          </n-tooltip>
-        </div>
-
-        <div class="setting-item">
-          <n-checkbox v-model:checked="config.custom" @update:checked="save">开启自定义功能</n-checkbox>
-          <n-tooltip trigger="hover" :style="{ maxWidth: '320px' }">
-            <template #trigger>
-              <n-icon class="help-icon" :size="16">
-                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 16h-2v-2h2v2zm1.07-7.75l-.9.92C12.45 11.9 12 12.5 12 14h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H7c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/></svg>
-              </n-icon>
-            </template>
-            <span>该功能为作者定制规则，仅在拉取远程订阅时生效。如不了解具体逻辑，请保持关闭。</span>
-          </n-tooltip>
-        </div>
-
-        <div v-if="config.custom" class="sub-settings-block">
-          <n-space vertical size="medium">
-            <div class="setting-item">
-              <n-checkbox v-model:checked="config.custom_loopback" @update:checked="save">回环地址与端口重写</n-checkbox>
-              <n-tooltip trigger="hover" :style="{ maxWidth: '340px' }">
-                <template #trigger>
-                  <n-icon class="help-icon" :size="16">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 16h-2v-2h2v2zm1.07-7.75l-.9.92C12.45 11.9 12 12.5 12 14h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H7c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/></svg>
-                  </n-icon>
-                </template>
-                <span>将远程订阅中地址为 127.0.0.1 的节点服务器自动替换为订阅域名，并将端口强制改为 443（适用于通过本地隧道回环中转的场景）。</span>
-              </n-tooltip>
+      <div class="settings-stack">
+        <n-card size="small" title="基础导出选项">
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">开启 UDP</div>
+              <div class="setting-desc">
+                控制导出配置中的 UDP 转发开关（如 Clash 的 udp: true、Surge 的 udp-relay），适用于游戏、语音与 QUIC 流量。
+              </div>
             </div>
-            <div class="setting-item">
-              <n-checkbox v-model:checked="config.custom_node_name" @update:checked="save">节点名称与国旗重写</n-checkbox>
-              <n-tooltip trigger="hover" :style="{ maxWidth: '340px' }">
-                <template #trigger>
-                  <n-icon class="help-icon" :size="16">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 16h-2v-2h2v2zm1.07-7.75l-.9.92C12.45 11.9 12 12.5 12 14h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H7c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/></svg>
-                  </n-icon>
-                </template>
-                <span>识别以“🇭🇰【香港”开头且带有 SG/TYO/LAX 等地区代号的中转节点，自动修正为对应落地国家的国旗与城市名称（如新加坡、东京等）；若远程订阅域名/目标为 IPv6，自动将线路标识标记为 IPv6。</span>
-              </n-tooltip>
+            <n-switch
+              v-model:value="config.udp"
+              :disabled="loading || saving || loadFailed"
+              @update:value="save"
+            />
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">跳过证书验证</div>
+              <div class="setting-desc">
+                导出配置开启 skip-cert-verify，用于兼容自签名证书或域名不匹配节点，会降低传输安全性。
+              </div>
             </div>
-          </n-space>
-        </div>
-      </n-space>
+            <n-switch
+              v-model:value="config.skipcert"
+              :disabled="loading || saving || loadFailed"
+              @update:value="save"
+            />
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">Emoji 入口国旗</div>
+              <div class="setting-desc">
+                按节点服务器 IP 自动查询地理位置并在名称前补国旗 Emoji；节点较多时会增加首次订阅生成耗时。
+              </div>
+            </div>
+            <n-switch
+              v-model:value="config.emoji"
+              :disabled="loading || saving || loadFailed"
+              @update:value="save"
+            />
+          </div>
+        </n-card>
+
+        <n-card size="small" title="远程订阅自定义重写">
+          <div class="setting-row">
+            <div class="setting-copy">
+              <div class="setting-title">开启自定义功能</div>
+              <div class="setting-desc">
+                仅在展开 HTTP/HTTPS 远程订阅时生效，用于定制中转回环地址替换与落地节点改名；如不使用请保持关闭。
+              </div>
+            </div>
+            <n-switch
+              v-model:value="config.custom"
+              :disabled="loading || saving || loadFailed"
+              @update:value="save"
+            />
+          </div>
+
+          <div v-if="config.custom" class="sub-rows">
+            <div class="setting-row">
+              <div class="setting-copy">
+                <div class="setting-title">回环地址与端口重写</div>
+                <div class="setting-desc">
+                  将远程订阅中地址为 127.0.0.1 的节点自动替换为订阅域名，并将端口改为目标端口（默认 443，可通过环境变量覆盖）。
+                </div>
+              </div>
+              <n-switch
+                v-model:value="config.custom_loopback"
+                :disabled="loading || saving || loadFailed"
+                @update:value="save"
+              />
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-copy">
+                <div class="setting-title">节点名称与国旗重写</div>
+                <div class="setting-desc">
+                  识别中转前缀及地区代号（如 -SG/-TYO/-LAX）自动修正落地国旗与城市名称，远程订阅为 IPv6 目标时自动延续 IPv6 标识。
+                </div>
+              </div>
+              <n-switch
+                v-model:value="config.custom_node_name"
+                :disabled="loading || saving || loadFailed"
+                @update:value="save"
+              />
+            </div>
+          </div>
+        </n-card>
+      </div>
     </n-spin>
-  </n-card>
+  </div>
 </template>
 
 <style scoped>
-.settings-card {
-  margin: 0 auto;
-  max-width: 560px;
-}
-
-.settings-tip {
-  color: var(--n-text-color-3, #8a8f98);
-  font-size: 12px;
-  margin: 0 0 16px;
-}
-
-.setting-item {
-  display: inline-flex;
+.load-error-row {
   align-items: center;
-  gap: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
 }
 
-.help-icon {
-  color: var(--n-text-color-3, #8a8f98);
-  cursor: help;
-  display: inline-flex;
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.setting-row {
   align-items: center;
-  transition: color 0.2s ease;
+  border-top: 1px solid var(--n-border-color, #eee);
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+  padding: 14px 0;
 }
 
-.help-icon:hover {
-  color: var(--n-text-color-1, #1f2225);
+.setting-row:first-child {
+  border-top: none;
+  padding-top: 4px;
 }
 
-.sub-settings-block {
-  padding-left: 24px;
+.setting-row:last-child {
+  padding-bottom: 4px;
+}
+
+.setting-copy {
+  flex: 1;
+  max-width: 760px;
+  min-width: 0;
+}
+
+.setting-title {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.setting-desc {
+  color: var(--n-text-color-3, #8a8f98);
+  font-size: 13px;
+  line-height: 1.55;
+  margin-top: 3px;
+}
+
+.sub-rows {
+  border-top: 1px solid var(--n-border-color, #eee);
+  margin-top: 4px;
+  padding-left: 20px;
+}
+
+.sub-rows .setting-row:first-child {
+  padding-top: 14px;
 }
 </style>

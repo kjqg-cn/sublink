@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   useMessage,
   useDialog,
@@ -29,7 +30,15 @@ import {
 import NodeTable from '@/components/NodeTable.vue'
 import SubAddressCard from '@/components/SubAddressCard.vue'
 import CodeTextarea from '@/components/CodeTextarea.vue'
+import {
+  ACTIVE_SUB_STORAGE_KEY,
+  storageGet,
+  storageRemove,
+  storageSet
+} from '@/utils/storage'
 
+const route = useRoute()
+const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
 const themeVars = useThemeVars()
@@ -41,20 +50,33 @@ const panelVars = computed(() => ({
   '--panel-text': themeVars.value.textColor2,
   '--panel-text-3': themeVars.value.textColor3,
   '--panel-hover': themeVars.value.hoverColor,
-  '--panel-active': themeVars.value.primaryColorSuppl
+  '--panel-active': themeVars.value.primaryColor
 }))
 
 const subs = ref<SubSummary[]>([])
+const subFilter = ref('')
 const activeSub = ref('')
 const nodes = ref<SubNode[]>([])
 const loadingSubs = ref(false)
 const loadingNodes = ref(false)
+const loadNodesFailed = ref(false)
+const sorting = ref(false)
+let selectSeq = 0
+
+const filteredSubs = computed(() => {
+  const q = subFilter.value.trim().toLowerCase()
+  if (!q) return subs.value
+  return subs.value.filter((s) => s.name.toLowerCase().includes(q))
+})
+
+const canDragSort = computed(() => !subFilter.value.trim() && !sorting.value)
 
 // 当前订阅的 token / legacy 状态从节点数据里取。
 const activeToken = computed(() => nodes.value[0]?.access_token ?? '')
 const activeLegacy = computed(() => nodes.value.some((n) => n.legacy_enabled))
 
 const dragIndex = ref<number | null>(null)
+const dragOverIndex = ref<number | null>(null)
 
 // 新增节点弹窗
 const showAddNode = ref(false)
@@ -71,16 +93,21 @@ const showRename = ref(false)
 const renameText = ref('')
 const savingRename = ref(false)
 
-async function loadSubs() {
+async function loadSubs(preferredSub?: string) {
   loadingSubs.value = true
   try {
     const all = await getSubs()
     subs.value = groupSubs(all)
-    // 与老版一致：初次加载不默认选中任何订阅，右侧保持空态，需用户手动点击列表项。
-    // 仅当已选中的订阅不在最新列表里（被删除/重命名）时，清空选中回到空态。
-    if (!subs.value.some((s) => s.name === activeSub.value)) {
+    const candidate = preferredSub ?? activeSub.value
+    if (candidate && subs.value.some((s) => s.name === candidate)) {
+      if (candidate !== activeSub.value) {
+        await selectSub(candidate)
+      }
+    } else if (candidate) {
       activeSub.value = ''
       nodes.value = []
+      loadNodesFailed.value = false
+      storageRemove('session', ACTIVE_SUB_STORAGE_KEY)
     }
   } catch {
     message.error('加载订阅失败')
@@ -90,41 +117,65 @@ async function loadSubs() {
 }
 
 async function selectSub(name: string) {
+  const seq = ++selectSeq
+  const switched = activeSub.value !== name
   activeSub.value = name
+  storageSet('session', ACTIVE_SUB_STORAGE_KEY, name)
+  if (switched) {
+    nodes.value = []
+  }
   loadingNodes.value = true
+  loadNodesFailed.value = false
   try {
-    nodes.value = await getSubByName(name)
+    const result = await getSubByName(name)
+    if (seq !== selectSeq) return
+    nodes.value = result
   } catch {
+    if (seq !== selectSeq) return
+    nodes.value = []
+    loadNodesFailed.value = true
     message.error('加载节点失败')
   } finally {
-    loadingNodes.value = false
+    if (seq === selectSeq) {
+      loadingNodes.value = false
+    }
   }
 }
 
 async function refreshCurrent() {
+  if (!activeSub.value) return
   await selectSub(activeSub.value)
   await loadSubs()
 }
 
 // —— 拖拽排序（持久化到后端）——
 function onDragStart(index: number) {
+  if (!canDragSort.value) return
   dragIndex.value = index
+}
+
+function onDragOver(index: number) {
+  if (!canDragSort.value || dragIndex.value === null) return
+  dragOverIndex.value = index
 }
 
 function onDragEnd() {
   // 兜底：无论 drop 是否命中有效目标，拖拽结束都清理状态。
   dragIndex.value = null
+  dragOverIndex.value = null
 }
 
 async function onDrop(index: number) {
   const from = dragIndex.value
   dragIndex.value = null
-  if (from === null || from === index) return
+  dragOverIndex.value = null
+  if (!canDragSort.value || from === null || from === index) return
   const previous = [...subs.value]
   const list = [...subs.value]
   const [moved] = list.splice(from, 1)
   list.splice(index, 0, moved)
   subs.value = list
+  sorting.value = true
   try {
     const { code, msg } = await sortSubs(list.map((s) => s.name))
     if (code !== 200) {
@@ -134,6 +185,8 @@ async function onDrop(index: number) {
   } catch {
     subs.value = previous
     message.warning('订阅排序保存失败，请刷新后重试')
+  } finally {
+    sorting.value = false
   }
 }
 
@@ -144,6 +197,7 @@ function openAddNode() {
 }
 
 async function handleAddNode() {
+  if (savingNode.value) return
   if (!newNode.value.node.trim()) {
     message.warning('请输入节点')
     return
@@ -169,6 +223,10 @@ async function handleAddNode() {
 
 // —— 批量编辑 ——
 function openBatch() {
+  if (loadingNodes.value || loadNodesFailed.value) {
+    message.warning('请先等待节点加载完成或刷新重试')
+    return
+  }
   batchText.value = nodes.value
     .map((n) => n.node.replace(/\\/g, '\\\\').replace(/\|/g, '\\|') + (n.remarks ? '|' + n.remarks : ''))
     .join('\n')
@@ -176,6 +234,7 @@ function openBatch() {
 }
 
 async function handleBatch() {
+  if (savingBatch.value) return
   savingBatch.value = true
   try {
     const { code, msg } = await setSub({
@@ -201,6 +260,7 @@ function openRename() {
 }
 
 async function handleRename() {
+  if (savingRename.value) return
   const newName = renameText.value.trim()
   if (!newName || newName === activeSub.value) {
     showRename.value = false
@@ -212,7 +272,6 @@ async function handleRename() {
     message[code === 200 ? 'success' : 'warning'](msg)
     if (code === 200) {
       showRename.value = false
-      activeSub.value = newName
       await selectSub(newName)
       await loadSubs()
     }
@@ -236,7 +295,11 @@ function confirmDelSub() {
         const { code, msg } = await delSub(name)
         message[code === 200 ? 'success' : 'warning'](msg)
         if (code === 200) {
+          selectSeq++
           activeSub.value = ''
+          nodes.value = []
+          loadNodesFailed.value = false
+          storageRemove('session', ACTIVE_SUB_STORAGE_KEY)
           await loadSubs()
         }
       } catch {
@@ -246,28 +309,59 @@ function confirmDelSub() {
   })
 }
 
-onMounted(() => loadSubs())
+onMounted(async () => {
+  // 优先定位刚创建的订阅（?sub=xxx），其次恢复当前会话内最近查看的订阅；首次进入仍保持未选中。
+  const querySub = typeof route.query.sub === 'string' ? route.query.sub.trim() : ''
+  const savedSub = storageGet('session', ACTIVE_SUB_STORAGE_KEY) || ''
+  const preferred = querySub || savedSub || undefined
+  await loadSubs(preferred)
+  if (querySub) {
+    router.replace('/subs')
+  }
+})
 </script>
 
 <template>
   <div class="subs-page" :style="panelVars">
     <aside class="sub-list-panel">
-      <div class="panel-title">订阅列表 <span>拖动排序</span></div>
+      <div class="panel-head">
+        <div class="panel-title">
+          订阅列表
+          <span v-if="canDragSort">拖动排序</span>
+        </div>
+        <n-button size="tiny" type="primary" tertiary @click="router.push('/subs/create')">
+          + 新建
+        </n-button>
+      </div>
+
+      <n-input
+        v-if="subs.length > 0"
+        v-model:value="subFilter"
+        size="small"
+        clearable
+        placeholder="搜索订阅"
+        class="sub-search"
+      />
+
       <n-spin :show="loadingSubs">
         <div class="sub-list">
           <div
-            v-for="(item, index) in subs"
+            v-for="(item, index) in filteredSubs"
             :key="item.name"
             class="sub-item"
-            :class="{ active: activeSub === item.name }"
-            draggable="true"
+            :class="{
+              active: activeSub === item.name,
+              dragging: dragIndex === index,
+              'drag-over': dragOverIndex === index && dragIndex !== index
+            }"
+            :draggable="canDragSort"
             @click="selectSub(item.name)"
             @dragstart="onDragStart(index)"
-            @dragover.prevent
+            @dragover.prevent="onDragOver(index)"
             @drop="onDrop(index)"
             @dragend="onDragEnd"
           >
-            <n-icon class="drag-handle" :draggable="false">
+            <n-icon v-if="canDragSort" class="drag-handle" :draggable="false">
               <svg viewBox="0 0 24 24" width="16" height="16">
                 <path
                   fill="currentColor"
@@ -275,10 +369,14 @@ onMounted(() => loadSubs())
                 />
               </svg>
             </n-icon>
-            <span class="sub-name">{{ item.name }}</span>
+            <span class="sub-name" :title="item.name">{{ item.name }}</span>
             <n-tag size="small" :bordered="false" round>{{ item.count }}</n-tag>
           </div>
-          <n-empty v-if="!loadingSubs && !subs.length" description="暂无订阅" style="padding: 24px 0" />
+          <n-empty
+            v-if="!loadingSubs && !filteredSubs.length"
+            :description="subFilter.trim() ? '无匹配订阅' : '暂无订阅'"
+            style="padding: 24px 0"
+          />
         </div>
       </n-spin>
     </aside>
@@ -286,15 +384,19 @@ onMounted(() => loadSubs())
     <section class="sub-detail">
       <template v-if="activeSub">
         <div class="detail-head">
-          <div>
+          <div class="detail-title-wrap">
             <h2>{{ activeSub }}</h2>
             <span class="node-count">共 {{ nodes.length }} 个节点</span>
           </div>
           <div class="detail-actions">
-            <n-button size="small" @click="openRename">重命名</n-button>
-            <n-button size="small" type="error" secondary @click="confirmDelSub">删除订阅</n-button>
-            <n-button size="small" @click="openBatch">批量编辑</n-button>
             <n-button size="small" type="primary" @click="openAddNode">新增节点</n-button>
+            <n-button size="small" :disabled="loadingNodes || loadNodesFailed" @click="openBatch">
+              批量编辑
+            </n-button>
+            <n-button size="small" @click="openRename">重命名</n-button>
+            <n-button size="small" type="error" secondary class="danger-btn" @click="confirmDelSub">
+              删除订阅
+            </n-button>
           </div>
         </div>
 
@@ -305,12 +407,24 @@ onMounted(() => loadSubs())
           @legacy-changed="refreshCurrent"
         />
 
-        <node-table :nodes="nodes" :loading="loadingNodes" @refresh="refreshCurrent" />
+        <node-table
+          :sub-name="activeSub"
+          :nodes="nodes"
+          :loading="loadingNodes"
+          @refresh="refreshCurrent"
+        />
       </template>
-      <n-empty v-else description="选择左侧订阅查看节点" style="margin-top: 80px" />
+      <div v-else class="empty-detail">
+        <n-empty description="选择左侧订阅查看地址与节点" />
+      </div>
     </section>
 
-    <n-modal v-model:show="showAddNode" preset="card" title="新增节点" style="max-width: 560px">
+    <n-modal
+      v-model:show="showAddNode"
+      preset="card"
+      title="新增节点"
+      style="width: calc(100vw - 32px); max-width: 560px"
+    >
       <n-form>
         <n-form-item :label="`订阅：${activeSub}`">
           <n-input
@@ -337,8 +451,15 @@ onMounted(() => loadSubs())
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showBatch" preset="card" title="批量编辑节点" style="max-width: 760px">
-      <p class="batch-tip">每行一个节点，节点和备注使用 | 分隔（节点链接自身含 | 时写作 \|；无 #名称 节点导出时自动用备注兜底）。此操作会整体覆盖该订阅的节点。</p>
+    <n-modal
+      v-model:show="showBatch"
+      preset="card"
+      title="批量编辑节点"
+      style="width: calc(100vw - 32px); max-width: 760px"
+    >
+      <p class="batch-tip">
+        每行一个节点，节点和备注使用 | 分隔（节点链接自身含 \ 或 | 时分别写作 \\、\|；无 #名称 节点导出时自动用备注兜底）。此操作会整体覆盖该订阅的节点。
+      </p>
       <code-textarea
         v-model="batchText"
         :rows="16"
@@ -352,7 +473,12 @@ onMounted(() => loadSubs())
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showRename" preset="card" title="重命名订阅" style="max-width: 460px">
+    <n-modal
+      v-model:show="showRename"
+      preset="card"
+      title="重命名订阅"
+      style="width: calc(100vw - 32px); max-width: 460px"
+    >
       <n-input
         v-model:value="renameText"
         :maxlength="40"
@@ -372,51 +498,68 @@ onMounted(() => loadSubs())
 
 <style scoped>
 .subs-page {
+  align-items: start;
   display: grid;
   gap: 20px;
-  grid-template-columns: 240px 1fr;
-  align-items: start;
+  grid-template-columns: 256px minmax(0, 1fr);
 }
 
 .sub-list-panel {
   background: var(--panel-bg, #fff);
   border: 1px solid var(--panel-border, #eee);
-  border-radius: 10px;
-  padding: 12px;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 106px);
+  padding: 16px 14px;
+  position: sticky;
+  top: 0;
+}
+
+.panel-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding: 0 4px;
 }
 
 .panel-title {
-  align-items: center;
-  color: var(--panel-text, #666);
+  align-items: baseline;
+  color: var(--panel-text, #333);
   display: flex;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
-  justify-content: space-between;
-  margin-bottom: 10px;
-  padding: 0 4px;
+  gap: 6px;
 }
 
 .panel-title span {
   color: var(--panel-text-3, #8a8f98);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
+}
+
+.sub-search {
+  margin-bottom: 10px;
 }
 
 .sub-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  overflow-y: auto;
 }
 
 .sub-item {
   align-items: center;
+  border: 1px solid transparent;
   border-radius: 8px;
   color: var(--panel-text, inherit);
   cursor: pointer;
   display: flex;
   gap: 8px;
   padding: 9px 10px;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
 }
 
 /* 子元素（尤其内联 SVG 图标）默认可拖拽，会与整行拖拽冲突导致拖拽会话卡死；
@@ -431,13 +574,23 @@ onMounted(() => loadSubs())
 }
 
 .sub-item.active {
-  background: rgba(99, 102, 241, 0.16);
+  background: rgba(99, 102, 241, 0.14);
   color: var(--panel-active, #6366f1);
+  font-weight: 500;
+}
+
+.sub-item.dragging {
+  opacity: 0.45;
+}
+
+.sub-item.drag-over {
+  border-color: var(--panel-active, #6366f1);
 }
 
 .drag-handle {
   color: var(--panel-text-3, #b3b8c0);
   cursor: grab;
+  flex: none;
 }
 
 .sub-name {
@@ -452,14 +605,24 @@ onMounted(() => loadSubs())
 }
 
 .detail-head {
-  align-items: flex-end;
+  align-items: center;
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: space-between;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
+}
+
+.detail-title-wrap {
+  min-width: 0;
 }
 
 .detail-head h2 {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
   margin: 0;
+  word-break: break-word;
 }
 
 .node-count {
@@ -468,9 +631,24 @@ onMounted(() => loadSubs())
 }
 
 .detail-actions {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.danger-btn {
+  margin-left: 4px;
+}
+
+.empty-detail {
+  align-items: center;
+  background: var(--panel-bg, #fff);
+  border: 1px dashed var(--panel-border, #e0e0e6);
+  border-radius: 12px;
+  display: flex;
+  justify-content: center;
+  min-height: 320px;
 }
 
 .batch-tip {
@@ -483,5 +661,20 @@ onMounted(() => loadSubs())
   display: flex;
   gap: 10px;
   justify-content: flex-end;
+}
+
+@media (max-width: 960px) {
+  .subs-page {
+    grid-template-columns: 1fr;
+  }
+
+  .sub-list-panel {
+    max-height: 260px;
+    position: static;
+  }
+
+  .danger-btn {
+    margin-left: 0;
+  }
 }
 </style>

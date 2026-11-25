@@ -2023,9 +2023,10 @@ class Round3GlobalAudit24ItemsTest(unittest.TestCase):
         app_ui = _make_test_app()
         with app_ui.app_context():
             client_ui = app_ui.test_client()
-            res_next = client_ui.get('/next')
-            self.assertEqual(res_next.status_code, 302)
-            self.assertTrue(res_next.headers['Location'].endswith('/'))
+            for next_path in ('/next', '/next/'):
+                res_next = client_ui.get(next_path)
+                self.assertEqual(res_next.status_code, 302)
+                self.assertTrue(res_next.headers['Location'].endswith('/'))
 
             with tempfile.TemporaryDirectory() as tmp_app_dir:
                 with patch.object(view, 'path', tmp_app_dir):

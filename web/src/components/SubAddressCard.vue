@@ -9,6 +9,7 @@ import {
   NInputGroupLabel,
   NButton,
   NSwitch,
+  NCheckbox,
   NTag,
   NSpace
 } from 'naive-ui'
@@ -35,11 +36,20 @@ const typeOptions: { label: string; value: SubType }[] = [
 ]
 
 const subType = ref<SubType>('v2ray')
+const singboxLegacy = ref(false)
 const legacy = ref(props.legacyEnabled)
 const legacyUpdating = ref(false)
 const showQr = ref(false)
 const qrText = ref('')
 const showRule = ref(false)
+
+watch(
+  () => props.name,
+  () => {
+    legacy.value = props.legacyEnabled
+    legacyUpdating.value = false
+  }
+)
 
 watch(
   () => props.legacyEnabled,
@@ -48,11 +58,18 @@ watch(
   }
 )
 
+function appendQuery(url: string): string {
+  if (subType.value === 'sing-box' && singboxLegacy.value) {
+    return `${url}?legacy=1`
+  }
+  return url
+}
+
 // 有 token 用 token 地址，否则回退到 base64 旧地址编码。
 const mainUrl = computed(() =>
-  props.token ? subUrl(subType.value, props.token) : legacySubUrl(subType.value, props.name)
+  appendQuery(props.token ? subUrl(subType.value, props.token) : legacySubUrl(subType.value, props.name))
 )
-const legacyUrl = computed(() => legacySubUrl(subType.value, props.name))
+const legacyUrl = computed(() => appendQuery(legacySubUrl(subType.value, props.name)))
 
 // clash/surge/sing-box 才有规则编辑。
 const ruleKind = computed(() => (subType.value === 'v2ray' ? null : subType.value))
@@ -68,9 +85,12 @@ function openQr(text: string) {
 }
 
 async function toggleLegacy(value: boolean) {
+  if (legacyUpdating.value) return
+  const targetName = props.name
   legacyUpdating.value = true
   try {
-    const { code, msg } = await setSubLegacy(props.name, value)
+    const { code, msg } = await setSubLegacy(targetName, value)
+    if (props.name !== targetName) return
     if (code === 200) {
       legacy.value = value
       emit('legacy-changed', value)
@@ -79,10 +99,13 @@ async function toggleLegacy(value: boolean) {
       message.warning(msg)
     }
   } catch {
+    if (props.name !== targetName) return
     legacy.value = !value
     message.warning('旧地址兼容状态保存失败，请刷新后重试')
   } finally {
-    legacyUpdating.value = false
+    if (props.name === targetName) {
+      legacyUpdating.value = false
+    }
   }
 }
 </script>
@@ -94,13 +117,18 @@ async function toggleLegacy(value: boolean) {
         <div class="rule-slot">
           <n-button v-show="ruleKind" size="small" tertiary @click="showRule = true">编辑规则</n-button>
         </div>
-        <n-select v-model:value="subType" :options="typeOptions" size="small" style="width: 130px" />
+        <n-select v-model:value="subType" :options="typeOptions" size="small" style="width: 124px" />
       </div>
     </template>
 
     <div class="addr-label">
-      <n-tag :bordered="false" size="small" type="success">Token 新地址</n-tag>
-      <span>新客户端请使用此地址</span>
+      <div class="addr-label-left">
+        <n-tag :bordered="false" size="small" type="success">Token 地址</n-tag>
+        <span>新客户端推荐使用</span>
+      </div>
+      <n-checkbox v-if="subType === 'sing-box'" v-model:checked="singboxLegacy" size="small">
+        1.12～1.13 兼容 (?legacy=1)
+      </n-checkbox>
     </div>
     <n-input-group>
       <n-input-group-label>订阅地址</n-input-group-label>
@@ -112,7 +140,7 @@ async function toggleLegacy(value: boolean) {
     <div class="legacy-row">
       <div>
         <strong>旧地址兼容</strong>
-        <span class="legacy-desc">仅为仍在使用 Base64 地址的客户端开启</span>
+        <span class="legacy-desc">仅为仍在使用 Base64 地址的旧客户端开启</span>
       </div>
       <n-space align="center">
         <span class="legacy-status">{{ legacy ? '已开启' : '已关闭' }}</span>
@@ -122,8 +150,10 @@ async function toggleLegacy(value: boolean) {
 
     <template v-if="legacy">
       <div class="addr-label">
-        <n-tag :bordered="false" size="small" type="info">Base64 旧地址</n-tag>
-        <span>用于兼容已部署的旧客户端</span>
+        <div class="addr-label-left">
+          <n-tag :bordered="false" size="small" type="info">Base64 旧地址</n-tag>
+          <span>用于兼容已部署的旧客户端</span>
+        </div>
       </div>
       <n-input-group>
         <n-input-group-label>旧版地址</n-input-group-label>
@@ -139,7 +169,7 @@ async function toggleLegacy(value: boolean) {
 
 <style scoped>
 .addr-card {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 /* 右侧下拉框位置固定，编辑规则按钮占位在左侧，切换格式时不再左右跳动 */
@@ -159,29 +189,44 @@ async function toggleLegacy(value: boolean) {
 .addr-label {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  margin: 12px 0 6px;
+  justify-content: space-between;
+  margin: 10px 0 6px;
 }
 
-.addr-label span {
+.addr-label-left {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.addr-label-left span {
   color: var(--n-text-color-3, #8a8f98);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .legacy-row {
   align-items: center;
   border-top: 1px solid var(--n-border-color, #eee);
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: space-between;
   margin-top: 16px;
   padding-top: 14px;
 }
 
+.legacy-row strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
 .legacy-desc {
   color: var(--n-text-color-3, #8a8f98);
   display: block;
-  font-size: 12px;
-  margin-top: 2px;
+  font-size: 13px;
+  margin-top: 3px;
 }
 
 .legacy-status {

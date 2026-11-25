@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useMessage, NCard, NInput, NButton, NForm, NFormItem, NIcon } from 'naive-ui'
 import { login } from '@/api'
 import { themeMode, toggleTheme } from '@/theme'
+import { storageSet } from '@/utils/storage'
 
 const router = useRouter()
 const message = useMessage()
@@ -13,6 +14,7 @@ const password = ref('')
 const loading = ref(false)
 
 async function handleLogin() {
+  if (loading.value) return
   if (!username.value || !password.value) {
     message.warning('请输入账号和密码')
     return
@@ -25,8 +27,8 @@ async function handleLogin() {
     })
     message[code === 200 ? 'success' : 'warning'](msg)
     if (code === 200 && token) {
-      localStorage.setItem('token', JSON.stringify(token))
-      localStorage.setItem('refresh', JSON.stringify(refresh))
+      storageSet('local', 'token', JSON.stringify(token))
+      storageSet('local', 'refresh', JSON.stringify(refresh))
       router.push('/')
     }
   } catch (err: unknown) {
@@ -41,7 +43,12 @@ async function handleLogin() {
 <template>
   <div class="login-page">
     <div class="theme-toggle">
-      <n-button quaternary circle @click="toggleTheme">
+      <n-button
+        quaternary
+        circle
+        :title="themeMode === 'light' ? '切换深色主题' : '切换浅色主题'"
+        @click="toggleTheme"
+      >
         <template #icon>
           <n-icon>
             <svg viewBox="0 0 24 24" width="18" height="18">

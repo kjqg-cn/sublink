@@ -28,7 +28,7 @@ watch(
     :show="show"
     preset="card"
     title="订阅二维码"
-    style="max-width: 320px"
+    style="width: calc(100vw - 32px); max-width: 320px"
     @update:show="emit('update:show', $event)"
   >
     <div class="qr-body">

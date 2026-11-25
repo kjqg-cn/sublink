@@ -24,6 +24,7 @@ const boxHeight = computed(() => `${props.rows * LINE_HEIGHT + PADDING_Y}px`)
 const wrapVars = computed(() => ({
   '--code-bg': themeVars.value.inputColor,
   '--code-border': themeVars.value.borderColor,
+  '--code-focus': themeVars.value.primaryColor,
   '--code-text': themeVars.value.textColor1,
   '--code-gutter-text': themeVars.value.textColor3,
   '--code-gutter-bg': themeVars.value.actionColor,
@@ -62,10 +63,16 @@ function onScroll(e: Event) {
 .code-textarea {
   background: var(--code-bg, #fff);
   border: 1px solid var(--code-border, #e0e0e6);
-  border-radius: 6px;
+  border-radius: 8px;
   display: flex;
   overflow: hidden;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
   width: 100%;
+}
+
+.code-textarea:focus-within {
+  border-color: var(--code-focus, #6366f1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.16);
 }
 
 .gutter {
@@ -79,7 +86,8 @@ function onScroll(e: Event) {
   height: 100%;
   line-height: 1.6;
   overflow: hidden;
-  padding: 8px 8px 8px 10px;
+  /* 底部预留横向滚动条高度，防止滚至末行时行号与代码错位 */
+  padding: 8px 8px 24px 10px;
   text-align: right;
   user-select: none;
 }

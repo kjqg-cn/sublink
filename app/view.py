@@ -410,6 +410,7 @@ def get_index():
 
 
 @blue.route('/next')
+@blue.route('/next/')
 def get_index_next():
     return redirect('/', code=302)
 

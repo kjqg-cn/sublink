@@ -96,7 +96,7 @@ async function handleSave() {
     :show="show"
     preset="card"
     :title="`${kind} 规则编辑（所有订阅共用）`"
-    style="max-width: 900px"
+    style="width: calc(100vw - 32px); max-width: 900px"
     @update:show="emit('update:show', $event)"
   >
     <n-alert type="info" :bordered="false" style="margin-bottom: 12px">{{ tips[kind] }}</n-alert>

@@ -1,22 +1,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import {
-  useMessage,
-  useDialog,
-  NCard,
-  NInput,
-  NButton,
-  NForm,
-  NFormItem,
-  NInputGroup,
-  NInputGroupLabel
-} from 'naive-ui'
+import { useMessage, NCard, NInput, NButton, NForm, NFormItem, NTag } from 'naive-ui'
 import { setUser, currentUsername } from '@/api'
+import { clearSessionState, storageRemove } from '@/utils/storage'
 
 const router = useRouter()
 const message = useMessage()
-const dialog = useDialog()
 
 const username = ref(currentUsername())
 const oldPassword = ref('')
@@ -24,13 +14,15 @@ const newUserName = ref(username.value)
 const password = ref('')
 const saving = ref(false)
 
-function logout() {
-  localStorage.removeItem('token')
-  localStorage.removeItem('refresh')
+function clearAuthAndRedirect() {
+  storageRemove('local', 'token')
+  storageRemove('local', 'refresh')
+  clearSessionState()
   router.push('/login')
 }
 
 async function handleSave() {
+  if (saving.value) return
   if (!oldPassword.value) {
     message.warning('请输入当前密码')
     return
@@ -54,7 +46,7 @@ async function handleSave() {
     message[code === 200 ? 'success' : 'warning'](msg)
     if (code === 200) {
       message.info('账号已修改，请重新登录')
-      logout()
+      clearAuthAndRedirect()
     }
   } catch {
     message.error('修改失败')
@@ -62,69 +54,95 @@ async function handleSave() {
     saving.value = false
   }
 }
-
-function confirmLogout() {
-  dialog.warning({
-    title: '注销',
-    content: '此操作将注销并重新登录，是否继续？',
-    positiveText: '确定',
-    negativeText: '取消',
-    onPositiveClick: logout
-  })
-}
 </script>
 
 <template>
-  <n-card class="account-card" title="账号设置">
-    <div class="current-user">
-      当前账号：<strong>{{ username }}</strong>
-      <n-button size="tiny" tertiary @click="confirmLogout">注销</n-button>
+  <div class="page-section">
+    <p class="page-desc">
+      修改管理员账号或密码前需验证当前密码；保存成功后所有历史登录令牌将自动失效。
+    </p>
+    <div class="account-grid">
+      <n-card size="small" title="修改登录凭据">
+        <n-form class="account-form" @submit.prevent="handleSave">
+          <n-form-item label="当前密码">
+            <n-input
+              v-model:value="oldPassword"
+              type="password"
+              show-password-on="click"
+              placeholder="请输入当前密码以确认身份"
+            />
+          </n-form-item>
+          <n-form-item label="新账号">
+            <n-input v-model:value="newUserName" placeholder="3-32 位字母、数字或 _ . -" />
+          </n-form-item>
+          <n-form-item label="新密码">
+            <n-input
+              v-model:value="password"
+              type="password"
+              show-password-on="click"
+              placeholder="4-64 位可打印字符"
+            />
+          </n-form-item>
+          <n-button type="primary" :loading="saving" attr-type="submit">保存修改</n-button>
+        </n-form>
+      </n-card>
+
+      <n-card size="small" title="当前会话与安全说明" class="account-aside">
+        <div class="info-row">
+          <span class="info-label">当前登录账号</span>
+          <n-tag size="small" :bordered="false" type="primary" round>{{ username || '—' }}</n-tag>
+        </div>
+        <ul class="security-tips">
+          <li>账号支持 3～32 位字母、数字及 <code>_ . -</code> 符号。</li>
+          <li>密码支持 4～64 位可打印字符，后端以 PBKDF2-SHA256 哈希存储。</li>
+          <li>修改凭据后会递增令牌版本，其他设备上的旧登录态将立即失效。</li>
+        </ul>
+      </n-card>
     </div>
-    <n-form>
-      <n-form-item label="当前密码">
-        <n-input-group>
-          <n-input-group-label>当前密码</n-input-group-label>
-          <n-input
-            v-model:value="oldPassword"
-            type="password"
-            show-password-on="click"
-            placeholder="请输入当前密码以确认身份"
-          />
-        </n-input-group>
-      </n-form-item>
-      <n-form-item label="新账号">
-        <n-input-group>
-          <n-input-group-label>新账号</n-input-group-label>
-          <n-input v-model:value="newUserName" placeholder="3-32 位字母、数字或 _ . -" />
-        </n-input-group>
-      </n-form-item>
-      <n-form-item label="新密码">
-        <n-input-group>
-          <n-input-group-label>新密码</n-input-group-label>
-          <n-input
-            v-model:value="password"
-            type="password"
-            show-password-on="click"
-            placeholder="4-64 位"
-            @keydown.enter="handleSave"
-          />
-        </n-input-group>
-      </n-form-item>
-    </n-form>
-    <n-button type="primary" :loading="saving" @click="handleSave">修改</n-button>
-  </n-card>
+  </div>
 </template>
 
 <style scoped>
-.account-card {
-  margin: 0 auto;
-  max-width: 520px;
+.account-grid {
+  align-items: start;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) 340px;
 }
 
-.current-user {
+.account-form {
+  max-width: 480px;
+}
+
+.info-row {
   align-items: center;
+  border-bottom: 1px solid var(--n-border-color, #eee);
   display: flex;
-  gap: 12px;
-  margin-bottom: 18px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+}
+
+.info-label {
+  color: var(--n-text-color-2, #555);
+  font-size: 13px;
+}
+
+.security-tips {
+  color: var(--n-text-color-3, #8a8f98);
+  font-size: 13px;
+  line-height: 1.75;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.security-tips li + li {
+  margin-top: 6px;
+}
+
+@media (max-width: 900px) {
+  .account-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
