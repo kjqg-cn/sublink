@@ -7,27 +7,36 @@ Sublink 是一个面向个人使用的自托管订阅管理工具，用于集中
 
 ## 界面预览
 
-基于 Vue 3 + TypeScript + Naive UI 构建，支持明暗主题切换、二维码地址、拖动排序与规则配置在线编辑（原 `/next` 路径会自动重定向至 `/`）：
+基于 Vue 3 + TypeScript + Naive UI 构建，支持明暗主题自动跟随、可折叠侧栏与移动端抽屉、节点协议标签解析与筛选、拖动排序、二维码地址及规则配置在线编辑（原 `/next` 路径会自动重定向至 `/`）：
 
-| **订阅管理** | **节点与订阅地址** |
+| **订阅管理与节点列表（浅色主题）** | **多端配置与旧地址兼容（深色主题）** |
 | :----: | :----: |
-| ![Sublink v3 订阅管理界面](readme/img_next_1.png)  | ![Sublink v3 节点列表与订阅地址界面](readme/img_next_2.png)  |
+| ![Sublink v3 订阅管理与节点列表界面](readme/img_next_1.png)  | ![Sublink v3 深色主题、sing-box 兼容与旧地址界面](readme/img_next_2.png)  |
 
-## 前端开发与本地源码构建
+## 本地开发与源码部署
 
-本仓库不提交前端编译产物，推荐直接使用 Docker 多阶段构建自动完成编译；如需本地源码运行或二次开发，可在 `web` 目录构建产物至 `app/static/dist`：
+本仓库不提交前端编译产物，推荐直接使用 Docker 多阶段构建自动完成编译；如需本地源码运行或二次开发，按以下步骤分别构建前端并启动后端：
 
 ```bash
+# 1. 构建前端产物到 app/static/dist（由 Flask 在 / 提供服务）
 cd web
 npm ci
-npm run dev      # 开发调试，访问 http://localhost:5174
-npm run build    # 类型检查并编译产物到 app/static/dist，由 Flask 在 / 提供服务
+npm run build
+# 如需前端热更新开发调试，运行 npm run dev（访问 http://localhost:5174）
+
+# 2. 安装 Python 依赖、初始化/迁移数据库并启动后端
+cd ..
+pip install -r requirements.txt
+python upgrade_db.py
+python run.py
 ```
 
 ## v3 主要变化
 
 - 全面迁移至 Vue 3 + TypeScript + Naive UI 前端并移除旧版 Vue 2 依赖栈（`/` 为唯一主入口，`/next` 自动重定向）
 - 前端编译产物完全移出版本控制，通过 Docker 多阶段构建或部署端本地编译生成
+- 安全加固：密码 PBKDF2-SHA256 哈希自动升级、`token_version` 改密失效旧令牌、双桶登录防爆破限流、条件化反代 `ProxyFix`、SSRF/YAML 别名炸弹防护及日志凭据脱敏
+- 协议增强：完善 Hysteria2、SSR、Surge SS 协议支持，节点列表自动解析协议标签与可读名称并支持关键字筛选
 - 支持拖动调整订阅顺序
 - 使用随机 Token 生成订阅地址，避免在地址中直接暴露订阅名称
 - 支持按订阅开启旧版 Base64 地址兼容
@@ -68,7 +77,7 @@ http://服务器地址/sub/sing-box/<token>
 
 sing-box 地址默认输出面向 **sing-box 1.14+** 的远程 Profile（使用 `http_clients` 与 `route.default_http_client`），包含 TUN、DNS、手动选择、自动测速，以及中国大陆和局域网直连规则。支持转换 `vless`、`vmess`、`ss`、`trojan`、`hysteria` 和 `hysteria2` 节点；`SSR` 节点不在 sing-box 支持范围内。
 
-- 若使用 **sing-box 1.12 ～ 1.13** 等旧版内核客户端，可在订阅地址末尾附加 `?legacy=1` 或 `?version=1.12`，服务端将自动兼容输出旧版 `download_detour` 字段。
+- 若使用 **sing-box 1.12 ～ 1.13** 等旧版内核客户端，可在后台「订阅地址」卡片切换至 `sing-box` 后直接勾选 **`1.12～1.13 兼容 (?legacy=1)`**（或手动在订阅地址末尾附加 `?legacy=1` / `?version=1.12`），服务端将自动兼容输出旧版 `download_detour` 字段。
 
 - Token 地址不会因为修改订阅名称而变化
 - 客户端默认显示名称为 `v3订阅`
@@ -264,6 +273,12 @@ docker run -d --restart always \
 ```
 
 然后重新执行部署检查命令，确认日志和 `8000` 端口正常。
+
+> **从旧版本平滑升级注意事项**：
+> - 反向代理部署请务必配置 `-e TRUSTED_PROXIES=...` 并确认 Nginx 透传 `X-Forwarded-For` / `X-Forwarded-Proto` / `Host`。
+> - 若订阅中包含本机或内网远程订阅 URL，启动时请添加 `-e ALLOW_PRIVATE_SUB_URLS=1`。
+> - 原有管理员账号、订阅与 Token 均完整保留；旧明文密码可在更新后直接登录，首次登录成功会自动平滑升级为 PBKDF2-SHA256 哈希。
+> - 已持久化的 `/root/sublink-v3/db/surge.conf` 不会自动覆盖，如需同步最新默认 Surge 模板（移除旧版失效直连占位节点），可在备份后删除宿主机该文件并重启容器重新生成。
 
 ## 部署失败回退
 
