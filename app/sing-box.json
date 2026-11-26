@@ -19,26 +19,30 @@
           "enabled": true,
           "server_name": "cloudflare-dns.com"
         },
-        "detour": "proxy"
+        "detour": "🚀 节点选择"
       }
     ],
     "rules": [
       {
-        "rule_set": "geosite-cn",
+        "rule_set": [
+          "geosite-private",
+          "geosite-apple-cn",
+          "geosite-microsoft-cn",
+          "geosite-cn"
+        ],
         "action": "route",
         "server": "dns-direct"
       }
     ],
     "final": "dns-proxy",
-    "strategy": "prefer_ipv4"
+    "strategy": "ipv4_only"
   },
   "inbounds": [
     {
       "type": "tun",
       "tag": "tun-in",
       "address": [
-        "172.19.0.1/30",
-        "fdfe:dcba:9876::1/126"
+        "172.19.0.1/30"
       ],
       "auto_route": true,
       "stack": "mixed"
@@ -47,23 +51,74 @@
   "outbounds": [
     {
       "type": "selector",
-      "tag": "proxy",
+      "tag": "🚀 节点选择",
       "outbounds": [
-        "auto-select",
+        "♻️ 自动选择",
         "direct",
         "auto"
       ],
-      "default": "auto-select"
+      "default": "♻️ 自动选择"
     },
     {
       "type": "urltest",
-      "tag": "auto-select",
+      "tag": "♻️ 自动选择",
       "outbounds": [
         "auto"
       ],
       "url": "https://www.gstatic.com/generate_204",
       "interval": "5m",
       "tolerance": 50
+    },
+    {
+      "type": "selector",
+      "tag": "🤖 AI 服务",
+      "outbounds": [
+        "🚀 节点选择",
+        "♻️ 自动选择",
+        "auto"
+      ],
+      "default": "🚀 节点选择"
+    },
+    {
+      "type": "selector",
+      "tag": "📲 电报信息",
+      "outbounds": [
+        "🚀 节点选择",
+        "♻️ 自动选择",
+        "auto"
+      ],
+      "default": "🚀 节点选择"
+    },
+    {
+      "type": "selector",
+      "tag": "🌍 国外媒体",
+      "outbounds": [
+        "🚀 节点选择",
+        "♻️ 自动选择",
+        "direct",
+        "auto"
+      ],
+      "default": "🚀 节点选择"
+    },
+    {
+      "type": "selector",
+      "tag": "Ⓜ️ 微软服务",
+      "outbounds": [
+        "direct",
+        "🚀 节点选择",
+        "auto"
+      ],
+      "default": "direct"
+    },
+    {
+      "type": "selector",
+      "tag": "🍎 苹果服务",
+      "outbounds": [
+        "direct",
+        "🚀 节点选择",
+        "auto"
+      ],
+      "default": "direct"
     },
     {
       "type": "direct",
@@ -85,6 +140,46 @@
         "outbound": "direct"
       },
       {
+        "rule_set": "geosite-private",
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": "geosite-ads",
+        "action": "reject"
+      },
+      {
+        "rule_set": "geosite-ai",
+        "action": "route",
+        "outbound": "🤖 AI 服务"
+      },
+      {
+        "rule_set": [
+          "geosite-telegram",
+          "geoip-telegram"
+        ],
+        "action": "route",
+        "outbound": "📲 电报信息"
+      },
+      {
+        "rule_set": [
+          "geosite-youtube",
+          "geosite-netflix"
+        ],
+        "action": "route",
+        "outbound": "🌍 国外媒体"
+      },
+      {
+        "rule_set": "geosite-apple-cn",
+        "action": "route",
+        "outbound": "🍎 苹果服务"
+      },
+      {
+        "rule_set": "geosite-microsoft-cn",
+        "action": "route",
+        "outbound": "Ⓜ️ 微软服务"
+      },
+      {
         "rule_set": [
           "geosite-cn",
           "geoip-cn"
@@ -96,18 +191,72 @@
     "rule_set": [
       {
         "type": "remote",
+        "tag": "geosite-private",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/private.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-ads",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ads-all.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-ai",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ai-!cn.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-telegram",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/telegram.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geoip-telegram",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/telegram.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-youtube",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/youtube.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-netflix",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/netflix.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-apple-cn",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/apple-cn.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-microsoft-cn",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/microsoft@cn.srs"
+      },
+      {
+        "type": "remote",
         "tag": "geosite-cn",
         "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/cn.srs"
       },
       {
         "type": "remote",
         "tag": "geoip-cn",
         "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/cn.srs"
       }
     ],
-    "final": "proxy",
+    "final": "🚀 节点选择",
     "auto_detect_interface": true,
     "default_domain_resolver": "dns-direct",
     "default_http_client": "remote-client"
@@ -115,7 +264,7 @@
   "http_clients": [
     {
       "tag": "remote-client",
-      "detour": "proxy"
+      "detour": "🚀 节点选择"
     }
   ],
   "experimental": {

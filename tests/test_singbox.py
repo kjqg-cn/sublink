@@ -41,8 +41,8 @@ class SingBoxEncodeTest(unittest.TestCase):
             if outbound['type'] in ('selector', 'urltest')
         }
 
-        self.assertEqual(groups['auto-select']['outbounds'], ['direct'])
-        self.assertIn('direct', groups['proxy']['outbounds'])
+        self.assertEqual(groups['♻️ 自动选择']['outbounds'], ['direct'])
+        self.assertIn('direct', groups['🚀 节点选择']['outbounds'])
 
     def test_supported_nodes_are_converted_to_native_outbounds(self):
         vmess_data = {
@@ -117,7 +117,7 @@ class SingBoxEncodeTest(unittest.TestCase):
 
         self.assertFalse(any(outbound['type'] == 'hysteria' for outbound in config['outbounds']))
         groups = {outbound['tag']: outbound for outbound in config['outbounds']}
-        self.assertEqual(groups['auto-select']['outbounds'], ['direct'])
+        self.assertEqual(groups['♻️ 自动选择']['outbounds'], ['direct'])
 
     def test_grpc_plugin_and_tls_options_are_mapped(self):
         nodes = [
